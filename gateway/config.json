@@ -3,7 +3,7 @@
     {
       "title": "Kortex Coder (Qwen3-Coder-Next Int4)",
       "provider": "openai",
-      "model": "coder",
+      "model": "qwen-coder",
       "apiBase": "http://localhost:8080/v1",
       "apiKey": "kortex-local",
       "contextLength": 32768,
@@ -13,9 +13,9 @@
       }
     },
     {
-      "title": "Kortex Reasoning (Qwen3-30B-A3B MoE FP8)",
+      "title": "Kortex Reasoning (Qwen3.6-35B-A3B NVfp4)",
       "provider": "openai",
-      "model": "reasoning",
+      "model": "qwen-35b",
       "apiBase": "http://localhost:8080/v1",
       "apiKey": "kortex-local",
       "contextLength": 32768,
@@ -25,9 +25,9 @@
       }
     },
     {
-      "title": "Kortex Planning (Nemotron Ultra 253B)",
+      "title": "Kortex Planning (Nemotron-120B NVfp4)",
       "provider": "openai",
-      "model": "planning",
+      "model": "nemotron-120b",
       "apiBase": "http://localhost:8080/v1",
       "apiKey": "kortex-local",
       "contextLength": 131072,
@@ -40,13 +40,13 @@
   "tabAutocompleteModel": {
     "title": "Kortex Tab Autocomplete",
     "provider": "openai",
-    "model": "coder",
+    "model": "qwen-coder",
     "apiBase": "http://localhost:8080/v1",
     "apiKey": "kortex-local"
   },
   "embeddingsProvider": {
     "provider": "openai",
-    "model": "embedding",
+    "model": "qwen-embedding",
     "apiBase": "http://localhost:8080/v1",
     "apiKey": "kortex-local"
   },

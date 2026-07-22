@@ -31,7 +31,6 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
-import redis.asyncio as aioredis
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
@@ -76,70 +75,43 @@ _HOP_BY_HOP = frozenset(
 # ---------------------------------------------------------------------------
 
 MODEL_REGISTRY: dict[str, dict[str, Any]] = {
-    "embedding": {
+    "qwen-embedding": {
         "port":      8001,
         "vram_gb":   19.7,
         "exclusive": False,
-        "aliases":   ["qwen-vl-embedding", "Qwen/Qwen2.5-VL-7B-Instruct"],
-        "sparkrun_args": [
-            "--model", "Qwen/Qwen2.5-VL-7B-Instruct",
-            "--port",  "8001",
-            "--backend", "vllm-ray",
-            "--tensor-parallel", "1",
-            "--task", "embedding",
-            "--trust-remote-code",
-        ],
+        "recipe":    "@official/qwen3-vl-embedding-8b-vllm",
+        "aliases":   [],
+        "args": ["--tensor-parallel", "1", "--port", "8001"],
         "process": None,
         "healthy": False,
     },
-    "coder": {
+    "qwen-coder": {
         "port":      8002,
         "vram_gb":   52.5,
         "exclusive": False,
-        "aliases":   ["qwen-coder", "Qwen/Qwen2.5-Coder-32B-Instruct-GPTQ-Int4"],
-        "sparkrun_args": [
-            "--model", "Qwen/Qwen2.5-Coder-32B-Instruct-GPTQ-Int4",
-            "--port",  "8002",
-            "--backend", "vllm-ray",
-            "--tensor-parallel", "1",
-            "--quantization", "gptq",
-            "--trust-remote-code",
-        ],
+        "recipe":    "@official/qwen3-coder-next-int4-autoround-vllm",
+        "aliases":   [],
+        "args": ["--tensor-parallel", "1", "--port", "8002"],
         "process": None,
         "healthy": False,
     },
-    "reasoning": {
+    "qwen-35b": {
         "port":      8003,
         "vram_gb":   21.8,
         "exclusive": True,
-        "aliases":   ["qwen-35b", "Qwen/Qwen3-30B-A3B-FP8"],
-        "sparkrun_args": [
-            "--model", "Qwen/Qwen3-30B-A3B-FP8",
-            "--port",  "8003",
-            "--backend", "vllm-ray",
-            "--tensor-parallel", "1",
-            "--trust-remote-code",
-        ],
+        "recipe":    "@eugr/qwen3.6-35b-a3b-nvfp4",
+        "aliases":   [],
+        "args": ["--tensor-parallel", "1", "--port", "8003"],
         "process": None,
         "healthy": False,
     },
-    "planning": {
+    "nemotron-120b": {
         "port":      8000,
         "vram_gb":   90.0,
         "exclusive": True,
-        "aliases":   [
-            "nemotron",
-            "nemotron-120b",
-            "nvidia/Llama-3.1-Nemotron-Ultra-253B-v1",
-        ],
-        "sparkrun_args": [
-            "--model", "nvidia/Llama-3.1-Nemotron-Ultra-253B-v1",
-            "--port",  "8000",
-            "--backend", "vllm-ray",
-            "--tensor-parallel", "1",
-            "--quantization", "nvfp4",
-            "--trust-remote-code",
-        ],
+        "recipe":    "@eugr/nemotron-3-super-nvfp4",
+        "aliases":   ["nemotron"],
+        "args": ["--tensor-parallel", "1", "--port", "8000"],
         "process": None,
         "healthy": False,
     },
@@ -199,7 +171,7 @@ def _launch_process(key: str) -> None:
     os.makedirs(log_dir, exist_ok=True)
     log_file = open(f"{log_dir}/{key}.log", "a")  # noqa: SIM115
     cfg["_log_file"] = log_file
-    cmd = ["sparkrun"] + cfg["sparkrun_args"]
+    cmd = ["sparkrun", "run", cfg["recipe"]] + cfg["args"]
     logger.info("Launching model '%s': %s", key, " ".join(cmd))
     cfg["process"] = subprocess.Popen(
         cmd,
@@ -374,9 +346,9 @@ async def _extract_model_key(request: Request) -> str | None:
         key = resolve_model(model_name)
         if key:
             return key
-        logger.warning("Unknown model '%s'; falling back to 'coder'.", model_name)
+        logger.warning("Unknown model '%s'; falling back to 'qwen-coder'.", model_name)
 
-    return "coder"
+    return "qwen-coder"
 
 
 @app.api_route(

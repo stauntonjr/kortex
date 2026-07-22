@@ -12,10 +12,8 @@ Run with::
 
 from __future__ import annotations
 
-import asyncio
 import json
 import subprocess
-from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -25,7 +23,6 @@ from fastapi.testclient import TestClient
 # Import the gateway module under test
 from gateway.gateway import (
     MODEL_REGISTRY,
-    _ALIAS_MAP,
     _is_healthy,
     _launch_process,
     _stop_process,
@@ -76,16 +73,13 @@ class TestResolveModel:
             assert resolve_model(key) == key
 
     def test_alias_resolves_to_canonical(self):
-        assert resolve_model("nemotron") == "planning"
-        assert resolve_model("qwen-coder") == "coder"
-        assert resolve_model("qwen-vl-embedding") == "embedding"
-        assert resolve_model("qwen-35b") == "reasoning"
+        assert resolve_model("nemotron") == "nemotron-120b"
 
     def test_unknown_model_returns_none(self):
         assert resolve_model("does-not-exist") is None
 
-    def test_full_hf_path_resolves(self):
-        assert resolve_model("Qwen/Qwen2.5-VL-7B-Instruct") == "embedding"
+    def test_full_recipe_key_resolves(self):
+        assert resolve_model("qwen-coder") == "qwen-coder"
 
 
 # ---------------------------------------------------------------------------
@@ -96,31 +90,31 @@ class TestResolveModel:
 class TestIsHealthy:
     @pytest.mark.asyncio
     async def test_healthy_when_backend_returns_200(self, respx_mock):
-        port = MODEL_REGISTRY["coder"]["port"]
+        port = MODEL_REGISTRY["qwen-coder"]["port"]
         respx_mock.get(f"http://127.0.0.1:{port}/health").mock(
             return_value=httpx.Response(200)
         )
-        result = await _is_healthy("coder")
+        result = await _is_healthy("qwen-coder")
         assert result is True
-        assert MODEL_REGISTRY["coder"]["healthy"] is True
+        assert MODEL_REGISTRY["qwen-coder"]["healthy"] is True
 
     @pytest.mark.asyncio
     async def test_unhealthy_when_backend_returns_503(self, respx_mock):
-        port = MODEL_REGISTRY["coder"]["port"]
+        port = MODEL_REGISTRY["qwen-coder"]["port"]
         respx_mock.get(f"http://127.0.0.1:{port}/health").mock(
             return_value=httpx.Response(503)
         )
-        result = await _is_healthy("coder")
+        result = await _is_healthy("qwen-coder")
         assert result is False
-        assert MODEL_REGISTRY["coder"]["healthy"] is False
+        assert MODEL_REGISTRY["qwen-coder"]["healthy"] is False
 
     @pytest.mark.asyncio
     async def test_unhealthy_on_connection_error(self, respx_mock):
-        port = MODEL_REGISTRY["coder"]["port"]
+        port = MODEL_REGISTRY["qwen-coder"]["port"]
         respx_mock.get(f"http://127.0.0.1:{port}/health").mock(
             side_effect=httpx.ConnectError("refused")
         )
-        result = await _is_healthy("coder")
+        result = await _is_healthy("qwen-coder")
         assert result is False
 
 
@@ -133,37 +127,37 @@ class TestProcessLifecycle:
     def test_launch_creates_popen_handle(self):
         mock_proc = MagicMock(spec=subprocess.Popen)
         with patch("gateway.gateway.subprocess.Popen", return_value=mock_proc) as mock_popen:
-            _launch_process("coder")
+            _launch_process("qwen-coder")
             mock_popen.assert_called_once()
-            assert MODEL_REGISTRY["coder"]["process"] is mock_proc
+            assert MODEL_REGISTRY["qwen-coder"]["process"] is mock_proc
 
     def test_launch_is_idempotent_when_process_exists(self):
         mock_proc = MagicMock(spec=subprocess.Popen)
-        MODEL_REGISTRY["coder"]["process"] = mock_proc
+        MODEL_REGISTRY["qwen-coder"]["process"] = mock_proc
         with patch("gateway.gateway.subprocess.Popen") as mock_popen:
-            _launch_process("coder")
+            _launch_process("qwen-coder")
             mock_popen.assert_not_called()
 
     def test_stop_terminates_process(self):
         mock_proc = MagicMock(spec=subprocess.Popen)
         mock_proc.pid = 12345
-        MODEL_REGISTRY["coder"]["process"] = mock_proc
-        _stop_process("coder")
+        MODEL_REGISTRY["qwen-coder"]["process"] = mock_proc
+        _stop_process("qwen-coder")
         mock_proc.terminate.assert_called_once()
-        assert MODEL_REGISTRY["coder"]["process"] is None
-        assert MODEL_REGISTRY["coder"]["healthy"] is False
+        assert MODEL_REGISTRY["qwen-coder"]["process"] is None
+        assert MODEL_REGISTRY["qwen-coder"]["healthy"] is False
 
     def test_stop_kills_on_timeout(self):
         mock_proc = MagicMock(spec=subprocess.Popen)
         mock_proc.pid = 12345
         mock_proc.wait.side_effect = [subprocess.TimeoutExpired(cmd="sparkrun", timeout=15), None]
-        MODEL_REGISTRY["coder"]["process"] = mock_proc
-        _stop_process("coder")
+        MODEL_REGISTRY["qwen-coder"]["process"] = mock_proc
+        _stop_process("qwen-coder")
         mock_proc.kill.assert_called_once()
 
     def test_stop_noop_when_not_running(self):
         # Should not raise
-        _stop_process("coder")
+        _stop_process("qwen-coder")
 
 
 # ---------------------------------------------------------------------------
@@ -174,10 +168,10 @@ class TestProcessLifecycle:
 class TestEnsureModelOnline:
     @pytest.mark.asyncio
     async def test_skips_if_already_healthy(self):
-        MODEL_REGISTRY["coder"]["process"] = MagicMock()
-        MODEL_REGISTRY["coder"]["healthy"] = True
+        MODEL_REGISTRY["qwen-coder"]["process"] = MagicMock()
+        MODEL_REGISTRY["qwen-coder"]["healthy"] = True
         with patch("gateway.gateway._launch_process") as mock_launch:
-            await ensure_model_online("coder")
+            await ensure_model_online("qwen-coder")
             mock_launch.assert_not_called()
 
     @pytest.mark.asyncio
@@ -186,29 +180,29 @@ class TestEnsureModelOnline:
             patch("gateway.gateway._launch_process") as mock_launch,
             patch("gateway.gateway._wait_healthy", new_callable=AsyncMock, return_value=True),
         ):
-            await ensure_model_online("embedding")
-            mock_launch.assert_called_once_with("embedding")
+            await ensure_model_online("qwen-embedding")
+            mock_launch.assert_called_once_with("qwen-embedding")
 
     @pytest.mark.asyncio
     async def test_exclusive_model_evicts_other_exclusive(self):
-        # Simulate reasoning already running
-        MODEL_REGISTRY["reasoning"]["process"] = MagicMock(spec=subprocess.Popen)
-        MODEL_REGISTRY["reasoning"]["healthy"] = True
+        # Simulate qwen-35b already running
+        MODEL_REGISTRY["qwen-35b"]["process"] = MagicMock(spec=subprocess.Popen)
+        MODEL_REGISTRY["qwen-35b"]["healthy"] = True
 
         with (
             patch("gateway.gateway._stop_process") as mock_stop,
             patch("gateway.gateway._launch_process"),
             patch("gateway.gateway._wait_healthy", new_callable=AsyncMock, return_value=True),
         ):
-            await ensure_model_online("planning")
-            # reasoning must be evicted since planning is also exclusive
-            mock_stop.assert_called_with("reasoning")
+            await ensure_model_online("nemotron-120b")
+            # qwen-35b must be evicted since nemotron-120b is also exclusive
+            mock_stop.assert_called_with("qwen-35b")
 
     @pytest.mark.asyncio
     async def test_exclusive_model_does_not_evict_background(self):
-        # Embedding (non-exclusive) is running
-        MODEL_REGISTRY["embedding"]["process"] = MagicMock(spec=subprocess.Popen)
-        MODEL_REGISTRY["embedding"]["healthy"] = True
+        # qwen-embedding (non-exclusive) is running
+        MODEL_REGISTRY["qwen-embedding"]["process"] = MagicMock(spec=subprocess.Popen)
+        MODEL_REGISTRY["qwen-embedding"]["healthy"] = True
 
         stopped: list[str] = []
 
@@ -220,8 +214,8 @@ class TestEnsureModelOnline:
             patch("gateway.gateway._launch_process"),
             patch("gateway.gateway._wait_healthy", new_callable=AsyncMock, return_value=True),
         ):
-            await ensure_model_online("planning")
-            assert "embedding" not in stopped
+            await ensure_model_online("nemotron-120b")
+            assert "qwen-embedding" not in stopped
 
     @pytest.mark.asyncio
     async def test_raises_on_startup_failure(self):
@@ -230,7 +224,7 @@ class TestEnsureModelOnline:
             patch("gateway.gateway._wait_healthy", new_callable=AsyncMock, return_value=False),
         ):
             with pytest.raises(RuntimeError, match="failed to start"):
-                await ensure_model_online("coder")
+                await ensure_model_online("qwen-coder")
 
 
 # ---------------------------------------------------------------------------
@@ -255,9 +249,9 @@ class TestGatewayEndpoints:
         assert ids == set(MODEL_REGISTRY.keys())
 
     def test_proxy_routes_to_correct_backend(self, test_client):
-        """A POST to /v1/chat/completions with model=coder reaches port 8002."""
-        MODEL_REGISTRY["coder"]["process"] = MagicMock()
-        MODEL_REGISTRY["coder"]["healthy"] = True
+        """A POST to /v1/chat/completions with model=qwen-coder reaches port 8002."""
+        MODEL_REGISTRY["qwen-coder"]["process"] = MagicMock()
+        MODEL_REGISTRY["qwen-coder"]["healthy"] = True
 
         fake_response = httpx.Response(
             200,
@@ -272,18 +266,18 @@ class TestGatewayEndpoints:
                 return_value=fake_response,
             ) as mock_req,
         ):
-            body = json.dumps({"model": "coder", "messages": [{"role": "user", "content": "hi"}]})
+            body = json.dumps({"model": "qwen-coder", "messages": [{"role": "user", "content": "hi"}]})
             resp = test_client.post(
                 "/v1/chat/completions",
                 content=body,
                 headers={"content-type": "application/json"},
             )
             assert resp.status_code == 200
-            # Verify the URL pointed to the coder backend port
+            # Verify the URL pointed to the qwen-coder backend port
             call_url: str = mock_req.call_args.kwargs.get("url", mock_req.call_args.args[1] if mock_req.call_args.args else "")
             assert "8002" in str(call_url)
 
-    def test_proxy_falls_back_to_coder_for_unknown_model(self, test_client):
+    def test_proxy_falls_back_to_qwen_coder_for_unknown_model(self, test_client):
         fake_response = httpx.Response(200, json={"ok": True})
 
         with (
@@ -302,7 +296,7 @@ class TestGatewayEndpoints:
             )
             assert resp.status_code == 200
             call_url = str(mock_req.call_args.kwargs.get("url", ""))
-            assert "8002" in call_url  # coder port
+            assert "8002" in call_url  # qwen-coder port
 
     def test_proxy_returns_503_when_model_fails_to_start(self, test_client):
         with patch(
@@ -310,7 +304,7 @@ class TestGatewayEndpoints:
             new_callable=AsyncMock,
             side_effect=RuntimeError("failed to start"),
         ):
-            body = json.dumps({"model": "coder", "messages": []})
+            body = json.dumps({"model": "qwen-coder", "messages": []})
             resp = test_client.post(
                 "/v1/chat/completions",
                 content=body,
@@ -327,7 +321,7 @@ class TestGatewayEndpoints:
                 side_effect=httpx.ConnectError("refused"),
             ),
         ):
-            body = json.dumps({"model": "coder", "messages": []})
+            body = json.dumps({"model": "qwen-coder", "messages": []})
             resp = test_client.post(
                 "/v1/chat/completions",
                 content=body,
