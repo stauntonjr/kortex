@@ -58,7 +58,7 @@ TYPEDB_PASSWORD = os.getenv("TYPEDB_PASSWORD", "password")
 TYPEDB_REQUEST_TIMEOUT_MILLIS = int(os.getenv("TYPEDB_REQUEST_TIMEOUT_MILLIS", "15000"))
 
 if BACKEND_RETRIES < 1:
-    raise ValueError("GATEWAY_BACKEND_RETRIES must be at least 1")
+    raise ValueError("GATEWAY_BACKEND_RETRIES environment variable must be at least 1")
 
 # Forwarded headers that must not be re-sent to the backend
 _HOP_BY_HOP = frozenset(
@@ -222,7 +222,7 @@ async def _request_with_retries(
                 if attempt == BACKEND_RETRIES:
                     break
                 # Exponential backoff, e.g. 0.25s, 0.5s, 1.0s when BACKOFF_BASE=0.25.
-                backoff_seconds = min(BACKOFF_MAX, BACKOFF_BASE * (2 ** (attempt - 1)))
+                backoff_seconds = min(BACKOFF_MAX, BACKOFF_BASE * (2.0 ** (attempt - 1)))
                 await asyncio.sleep(backoff_seconds)
     if last_exc is not None:
         raise last_exc
@@ -414,7 +414,7 @@ async def gateway_ready(request: Request) -> JSONResponse:
         for key, cfg in MODEL_REGISTRY.items()
         if cfg.get("process") is not None or cfg.get("healthy", False)
     }
-    models_ok = any(checked_models.values())
+    models_ok = bool(checked_models) and any(checked_models.values())
     ready = typedb_ok and models_ok
     return JSONResponse(
         status_code=200 if ready else 503,

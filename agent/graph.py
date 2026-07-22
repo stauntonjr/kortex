@@ -27,7 +27,7 @@ import logging
 import httpx
 from langgraph.graph import END, StateGraph
 
-from memory.retrieval import build_memory_context
+from memory.retrieval import DEFAULT_TOKEN_BUDGET, MAX_TRAVERSAL_DEPTH, build_memory_context
 from agent.state import COMPLEXITY_MAP, WorkflowState
 
 logger = logging.getLogger(__name__)
@@ -40,8 +40,8 @@ def _build_messages_with_context(state: WorkflowState) -> list[dict[str, str]]:
 
     memory_context = build_memory_context(
         memory_nodes,
-        max_depth=state.get("memory_max_depth", 3),
-        token_budget=state.get("memory_token_budget", 1200),
+        max_depth=state.get("memory_max_depth", MAX_TRAVERSAL_DEPTH),
+        token_budget=state.get("memory_token_budget", DEFAULT_TOKEN_BUDGET),
     )
     if not memory_context:
         return messages
