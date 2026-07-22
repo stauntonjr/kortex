@@ -23,8 +23,11 @@ Environment variables (all optional, sensible defaults shown):
 from __future__ import annotations
 
 import asyncio
+import atexit
+import contextlib
 import logging
 import os
+import signal
 import subprocess
 import time
 from contextlib import asynccontextmanager
@@ -127,6 +130,11 @@ def resolve_model(model_name: str) -> str | None:
     return _ALIAS_MAP.get(model_name)
 
 
+# Lock that serialises VRAM-exclusive model swap operations so concurrent
+# agent invocations cannot race to evict/launch exclusive models simultaneously.
+_SWAP_LOCK = asyncio.Lock()
+
+
 # ---------------------------------------------------------------------------
 # Process management
 # ---------------------------------------------------------------------------
@@ -203,32 +211,32 @@ async def ensure_model_online(key: str) -> None:
     """
     Bring model *key* online, evicting conflicting exclusive models first.
 
-    For non-exclusive (background) models this is always safe.
-    For exclusive models we must stop all other exclusive models whose VRAM
-    would push us over the 121 GB limit.
+    An asyncio.Lock serialises concurrent calls so that only one VRAM swap
+    runs at a time, preventing race conditions under concurrent agent load.
     """
-    cfg = MODEL_REGISTRY[key]
+    async with _SWAP_LOCK:
+        cfg = MODEL_REGISTRY[key]
 
-    if cfg.get("healthy") and cfg.get("process") is not None:
-        return  # Already running
+        if cfg.get("healthy") and cfg.get("process") is not None:
+            return  # Already running
 
-    # If this model is exclusive, stop other exclusive models first
-    if cfg["exclusive"]:
-        for other_key, other_cfg in MODEL_REGISTRY.items():
-            if other_key == key:
-                continue
-            if other_cfg["exclusive"] and other_cfg.get("process") is not None:
-                logger.info(
-                    "Evicting exclusive model '%s' to free VRAM for '%s'.",
-                    other_key,
-                    key,
-                )
-                _stop_process(other_key)
+        # If this model is exclusive, stop other exclusive models first
+        if cfg["exclusive"]:
+            for other_key, other_cfg in MODEL_REGISTRY.items():
+                if other_key == key:
+                    continue
+                if other_cfg["exclusive"] and other_cfg.get("process") is not None:
+                    logger.info(
+                        "Evicting exclusive model '%s' to free VRAM for '%s'.",
+                        other_key,
+                        key,
+                    )
+                    _stop_process(other_key)
 
-    _launch_process(key)
-    ok = await _wait_healthy(key)
-    if not ok:
-        raise RuntimeError(f"Model '{key}' failed to start within {STARTUP_TIMEOUT}s.")
+        _launch_process(key)
+        ok = await _wait_healthy(key)
+        if not ok:
+            raise RuntimeError(f"Model '{key}' failed to start within {STARTUP_TIMEOUT}s.")
 
 
 # ---------------------------------------------------------------------------
@@ -245,6 +253,39 @@ async def _health_poll_loop() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Process cleanup — atexit and signal handlers
+# ---------------------------------------------------------------------------
+
+def _shutdown_all_models() -> None:
+    """Stop every running sparkrun subprocess. Safe to call multiple times."""
+    for key in list(MODEL_REGISTRY):
+        with contextlib.suppress(Exception):
+            _stop_process(key)
+
+
+atexit.register(_shutdown_all_models)
+
+
+def _install_signal_handlers() -> None:
+    """Chain SIGINT/SIGTERM so sparkrun children are always reaped on exit."""
+    _prev: dict[int, Any] = {}
+
+    def _handler(signum: int, frame: object) -> None:
+        logger.info("Signal %d received; shutting down all model processes.", signum)
+        _shutdown_all_models()
+        prev = _prev.get(signum)
+        if callable(prev):
+            prev(signum, frame)
+
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        _prev[sig] = signal.getsignal(sig)
+        signal.signal(sig, _handler)
+
+
+_install_signal_handlers()
+
+
+# ---------------------------------------------------------------------------
 # Application lifespan
 # ---------------------------------------------------------------------------
 
@@ -252,12 +293,14 @@ async def _health_poll_loop() -> None:
 async def lifespan(app: FastAPI):
     # Start background health-polling task
     poll_task = asyncio.create_task(_health_poll_loop())
-    yield
-    poll_task.cancel()
     try:
-        await poll_task
-    except asyncio.CancelledError:
-        pass
+        yield
+    finally:
+        poll_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await poll_task
+        # Ensure all model processes are stopped on graceful shutdown
+        _shutdown_all_models()
 
 
 # ---------------------------------------------------------------------------
@@ -413,3 +456,24 @@ async def proxy(path: str, request: Request) -> Response:
         headers=dict(backend_resp.headers),
         media_type=content_type,
     )
+
+
+# ---------------------------------------------------------------------------
+# CLI entry-point
+# ---------------------------------------------------------------------------
+
+def main() -> None:
+    """Start the Kortex gateway with uvicorn (used by the kortex-gateway script)."""
+    import uvicorn
+
+    logging.basicConfig(level=logging.INFO)
+    uvicorn.run(
+        "gateway.gateway:app",
+        host="0.0.0.0",
+        port=int(os.getenv("GATEWAY_PORT", "8080")),
+        log_level="info",
+    )
+
+
+if __name__ == "__main__":
+    main()

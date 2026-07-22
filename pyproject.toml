@@ -19,6 +19,8 @@ dependencies = [
     # Memory ingestion
     "qdrant-client>=1.9",
     "typedb-driver>=3.0",
+    # Agent orchestration
+    "langgraph>=0.2",
 ]
 
 [project.optional-dependencies]
@@ -30,11 +32,11 @@ dev = [
 ]
 
 [project.scripts]
-kortex-gateway = "gateway.gateway:app"
+kortex-gateway = "gateway.gateway:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["gateway*", "memory*"]
+include = ["gateway*", "memory*", "agent*"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
