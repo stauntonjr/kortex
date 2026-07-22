@@ -1,3 +1,7 @@
+# Disabled Workbench spec (moved so nvwb will convert the repo on clone)
+# Original spec moved to allow Workbench to detect a non-Workbench repo.
+
+# (original content retained)
 # NVIDIA AI Workbench Project Specification
 # ==========================================
 # Targets a single DGX Spark node with 121 GB unified VRAM.
