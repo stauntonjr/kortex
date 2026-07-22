@@ -1,0 +1,65 @@
+{
+  "models": [
+    {
+      "title": "Kortex Coder (Qwen3-Coder-Next Int4)",
+      "provider": "openai",
+      "model": "qwen-coder",
+      "apiBase": "http://localhost:8080/v1",
+      "apiKey": "kortex-local",
+      "contextLength": 32768,
+      "completionOptions": {
+        "temperature": 0.1,
+        "maxTokens": 4096
+      }
+    },
+    {
+      "title": "Kortex Reasoning (Qwen3.6-35B-A3B NVfp4)",
+      "provider": "openai",
+      "model": "qwen-35b",
+      "apiBase": "http://localhost:8080/v1",
+      "apiKey": "kortex-local",
+      "contextLength": 32768,
+      "completionOptions": {
+        "temperature": 0.3,
+        "maxTokens": 8192
+      }
+    },
+    {
+      "title": "Kortex Planning (Nemotron-120B NVfp4)",
+      "provider": "openai",
+      "model": "nemotron-120b",
+      "apiBase": "http://localhost:8080/v1",
+      "apiKey": "kortex-local",
+      "contextLength": 131072,
+      "completionOptions": {
+        "temperature": 0.2,
+        "maxTokens": 16384
+      }
+    }
+  ],
+  "tabAutocompleteModel": {
+    "title": "Kortex Tab Autocomplete",
+    "provider": "openai",
+    "model": "qwen-coder",
+    "apiBase": "http://localhost:8080/v1",
+    "apiKey": "kortex-local"
+  },
+  "embeddingsProvider": {
+    "provider": "openai",
+    "model": "qwen-embedding",
+    "apiBase": "http://localhost:8080/v1",
+    "apiKey": "kortex-local"
+  },
+  "contextProviders": [
+    { "name": "code" },
+    { "name": "docs" },
+    { "name": "diff" },
+    { "name": "terminal" },
+    { "name": "problems" }
+  ],
+  "slashCommands": [
+    { "name": "edit",  "description": "Edit highlighted code" },
+    { "name": "comment", "description": "Write comments for the highlighted code" },
+    { "name": "tests", "description": "Generate unit tests for the highlighted code" }
+  ]
+}

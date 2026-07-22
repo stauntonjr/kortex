@@ -1,0 +1,133 @@
+# NVIDIA AI Workbench Project Specification
+# ==========================================
+# Targets a single DGX Spark node with 121 GB unified VRAM.
+# https://docs.nvidia.com/ai-workbench/user-guide/latest/spec.html
+
+specVersion: v1
+
+meta:
+  name: kortex
+  description: >
+    Autonomous Model Gateway and Hypergraph Memory for DGX Spark.
+    Provides an OpenAI-compatible FastAPI proxy with dynamic VRAM management,
+    TypeDB 3.x hypergraph memory, Qdrant vector retrieval, and a LangGraph
+    orchestration harness.
+  labels:
+    - LLM
+    - RAG
+    - TypeDB
+    - LangGraph
+    - DGX-Spark
+
+environment:
+  base:
+    # CUDA 12.4 + cuDNN for vLLM/sparkrun compatibility on DGX Spark
+    image: nvcr.io/nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+    build_timestamp: "20240601000000"
+  packages:
+    system:
+      - curl
+      - git
+      - redis-tools
+      - netcat-openbsd    # port health checks in launch_models.sh
+    python:
+      version: "3.11"
+      user_installs: true
+      install_requirements: true
+      requirements_file: pyproject.toml
+
+resources:
+  # DGX Spark has a single NVIDIA GB10 SoC with 128 GB unified memory;
+  # 121 GB is reserved as usable VRAM for model inference.
+  gpu:
+    requested: 1
+  shm_size: 16gb
+
+mounts:
+  - description: "Persistent TypeDB data volume"
+    source: typedb-data
+    target: /mnt/typedb-data
+    type: volume
+
+  - description: "Persistent Qdrant vector index"
+    source: qdrant-data
+    target: /mnt/qdrant-data
+    type: volume
+
+  - description: "Redis persistence volume"
+    source: redis-data
+    target: /mnt/redis-data
+    type: volume
+
+  - description: "Model process logs"
+    source: kortex-logs
+    target: /tmp/kortex/logs
+    type: volume
+
+ports:
+  - description: "Kortex Model Gateway (OpenAI-compatible)"
+    name: gateway
+    port: 8080
+    protocol: http
+
+  - description: "TypeDB gRPC endpoint"
+    name: typedb
+    port: 1729
+    protocol: http
+
+  - description: "Qdrant REST API"
+    name: qdrant-rest
+    port: 6333
+    protocol: http
+
+  - description: "Qdrant gRPC"
+    name: qdrant-grpc
+    port: 6334
+    protocol: http
+
+  - description: "Redis"
+    name: redis
+    port: 6379
+    protocol: tcp
+
+  - description: "qwen-embedding model backend"
+    name: qwen-embedding
+    port: 8001
+    protocol: http
+
+  - description: "qwen-coder model backend"
+    name: qwen-coder
+    port: 8002
+    protocol: http
+
+  - description: "qwen-35b reasoning model backend"
+    name: qwen-35b
+    port: 8003
+    protocol: http
+
+  - description: "nemotron-120b planning model backend"
+    name: nemotron-120b
+    port: 8000
+    protocol: http
+
+# Override compose service volume targets to match mounts above
+variables:
+  - description: "TypeDB server address"
+    name: TYPEDB_ADDR
+    default: "localhost:1729"
+
+  - description: "Qdrant server address"
+    name: QDRANT_ADDR
+    default: "http://localhost:6333"
+
+  - description: "Redis URL"
+    name: REDIS_URL
+    default: "redis://localhost:6379/0"
+
+  - description: "Kortex gateway URL (used by the agent harness)"
+    name: GATEWAY_URL
+    default: "http://localhost:8080/v1"
+
+  - description: "Gateway startup timeout in seconds"
+    name: GATEWAY_STARTUP_TIMEOUT
+    default: "180"

@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kortex"
+version = "0.1.0"
+description = "Autonomous Model Gateway and Hypergraph Memory for DGX Spark"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+
+dependencies = [
+    # Gateway
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "httpx>=0.27",
+    "redis>=5.0",
+    # Memory ingestion
+    "qdrant-client>=1.9",
+    "typedb-driver>=3.0",
+    # Agent orchestration
+    "langgraph>=0.2",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+    "respx>=0.21",
+    "anyio[trio]>=4.4",
+]
+
+[project.scripts]
+kortex-gateway = "gateway.gateway:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gateway*", "memory*", "agent*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

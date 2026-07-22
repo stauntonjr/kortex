@@ -1,0 +1,61 @@
+name: kortex
+
+services:
+  typedb:
+    image: vaticle/typedb:3.3.0
+    container_name: kortex-typedb
+    restart: unless-stopped
+    ports:
+      - "1729:1729"
+    volumes:
+      - typedb-data:/opt/typedb-all-linux-x86_64/server/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:1729/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  qdrant:
+    image: qdrant/qdrant:v1.12.1
+    container_name: kortex-qdrant
+    restart: unless-stopped
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__GRPC_PORT: "6334"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  redis:
+    image: redis:7.4-alpine
+    container_name: kortex-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: >
+      redis-server
+      --save 60 1
+      --loglevel warning
+      --maxmemory 2gb
+      --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  typedb-data:
+  qdrant-data:
+  redis-data:
