@@ -189,7 +189,7 @@ class TestBuildGraph:
     def test_graph_has_intake_and_execute_nodes(self):
         graph = build_graph()
         node_names = set(graph.get_graph().nodes.keys())
-        assert "intake"  in node_names
+        assert "intake" in node_names
         assert "execute" in node_names
 
     @pytest.mark.asyncio
