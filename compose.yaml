@@ -55,6 +55,32 @@ services:
       retries: 5
       start_period: 10s
 
+    gateway:
+      image: python:3.11-slim
+      container_name: kortex-gateway
+      restart: unless-stopped
+      depends_on:
+        - typedb
+        - qdrant
+        - redis
+      ports:
+        - "8080:8080"
+      working_dir: /opt/kortex
+      volumes:
+        - ./:/opt/kortex:ro
+      environment:
+        - TYPEDB_ADDR=typedb:1729
+        - QDRANT_ADDR=http://qdrant:6333
+        - REDIS_URL=redis://redis:6379/0
+        - GATEWAY_URL=http://localhost:8080/v1
+      command: ["sh", "-c", "pip install --no-cache-dir -r /opt/kortex/pyproject.toml || true && python -m gateway.gateway"]
+      healthcheck:
+        test: ["CMD-SHELL", "curl -sf http://localhost:8080/healthz || exit 1"]
+        interval: 10s
+        timeout: 5s
+        retries: 5
+        start_period: 20s
+
 volumes:
   typedb-data:
   qdrant-data:

@@ -131,3 +131,43 @@ variables:
   - description: "Gateway startup timeout in seconds"
     name: GATEWAY_STARTUP_TIMEOUT
     default: "180"
+
+services:
+  # Map compose services to AI Workbench service definitions
+  typedb:
+    composeService: typedb
+    target: typedb
+    healthCheck:
+      type: http
+      endpoint: "/health"
+      port: 1729
+
+  qdrant:
+    composeService: qdrant
+    target: qdrant
+    healthCheck:
+      type: http
+      endpoint: "/healthz"
+      port: 6333
+
+  redis:
+    composeService: redis
+    target: redis
+    healthCheck:
+      type: tcp
+      port: 6379
+
+  gateway:
+    composeService: gateway
+    target: gateway
+    healthCheck:
+      type: http
+      endpoint: "/healthz"
+      port: 8080
+
+defaultService: gateway
+
+entry:
+  # Default command AI Workbench should use to run the gateway service when
+  # launching the project in the workbench UI. Match `pyproject.toml`'s script.
+  command: ["python", "-m", "gateway.gateway"]

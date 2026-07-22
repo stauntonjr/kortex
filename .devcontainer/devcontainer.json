@@ -1,0 +1,22 @@
+{
+  "name": "kortex-dev",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-azuretools.vscode-docker",
+        "ms-vscode-remote.remote-containers"
+      ]
+    }
+  },
+  "workspaceFolder": "/workspace/kortex",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace/kortex,type=bind,consistency=cached",
+  "remoteUser": "vscode",
+  "postCreateCommand": "python -m pip install --upgrade pip && python -m pip install -e .[dev] || true",
+  "settings": {
+    "terminal.integrated.shell.linux": "/bin/bash"
+  }
+}
