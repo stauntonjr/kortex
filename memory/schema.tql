@@ -1,0 +1,110 @@
+# Kortex Hypergraph Memory — TypeDB 3.x Schema
+# ================================================
+# Defines the symbolic knowledge graph for code entities, architectural
+# rules, relational triplet links, and multi-hop confidence scoring.
+
+define
+
+# ---------------------------------------------------------------------------
+# Attributes
+# ---------------------------------------------------------------------------
+
+  entity-id       sub attribute, value string;
+  entity-kind     sub attribute, value string;   # file | function | class | module | concept
+  entity-name     sub attribute, value string;
+  entity-path     sub attribute, value string;   # filesystem path or URI
+  entity-digest   sub attribute, value string;   # SHA-256 of source content
+  vector-id       sub attribute, value string;   # Qdrant point UUID
+  language        sub attribute, value string;
+  created-at      sub attribute, value datetime;
+  updated-at      sub attribute, value datetime;
+
+  rule-id         sub attribute, value string;
+  rule-kind       sub attribute, value string;   # naming | coupling | boundary | invariant
+  rule-name       sub attribute, value string;
+  rule-body       sub attribute, value string;   # human-readable rule description
+  severity        sub attribute, value string;   # info | warning | error
+
+  link-kind       sub attribute, value string;   # calls | imports | extends | implements | references | violates
+  confidence      sub attribute, value double;   # 0.0 – 1.0
+  weight          sub attribute, value double;   # edge weight for path scoring
+  evidence-count  sub attribute, value long;
+
+# ---------------------------------------------------------------------------
+# Entities
+# ---------------------------------------------------------------------------
+
+  code-entity sub entity,
+    owns entity-id @key,
+    owns entity-kind,
+    owns entity-name,
+    owns entity-path,
+    owns entity-digest,
+    owns vector-id,
+    owns language,
+    owns created-at,
+    owns updated-at,
+    plays triplet-link:subject,
+    plays triplet-link:object,
+    plays violation:offender;
+
+  rule-node sub entity,
+    owns rule-id @key,
+    owns rule-kind,
+    owns rule-name,
+    owns rule-body,
+    owns severity,
+    owns created-at,
+    plays violation:rule;
+
+# ---------------------------------------------------------------------------
+# Relations
+# ---------------------------------------------------------------------------
+
+  triplet-link sub relation,
+    owns link-kind,
+    owns confidence,
+    owns weight,
+    owns evidence-count,
+    owns created-at,
+    relates subject,
+    relates object;
+
+  violation sub relation,
+    owns confidence,
+    owns created-at,
+    relates offender,
+    relates rule;
+
+# ---------------------------------------------------------------------------
+# Modular Functions — multi-hop confidence scoring
+# ---------------------------------------------------------------------------
+
+# hop-confidence: aggregate confidence along a single direct edge
+  fun hop-confidence(
+      $subject: code-entity,
+      $object:  code-entity
+  ) -> double :
+    match
+      $link (subject: $subject, object: $object) isa triplet-link,
+        has confidence $c,
+        has weight     $w;
+    return mean($c * $w);
+
+# reachable-confidence: recursive two-hop path score between two entities
+  fun reachable-confidence(
+      $source: code-entity,
+      $target: code-entity
+  ) -> double :
+    match
+      $hop1 (subject: $source, object: $mid)  isa triplet-link, has confidence $c1, has weight $w1;
+      $hop2 (subject: $mid,    object: $target) isa triplet-link, has confidence $c2, has weight $w2;
+    return mean($c1 * $w1 * $c2 * $w2);
+
+# rule-violation-confidence: average confidence across all violations of a rule
+  fun rule-violation-confidence(
+      $rule: rule-node
+  ) -> double :
+    match
+      $v (rule: $rule, offender: $e) isa violation, has confidence $c;
+    return mean($c);
