@@ -78,7 +78,7 @@ class TestResolveModel:
     def test_unknown_model_returns_none(self):
         assert resolve_model("does-not-exist") is None
 
-    def test_full_recipe_key_resolves(self):
+    def test_canonical_key_round_trips(self):
         assert resolve_model("qwen-coder") == "qwen-coder"
 
 
