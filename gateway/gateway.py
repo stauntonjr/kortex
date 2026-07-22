@@ -203,6 +203,10 @@ async def _request_with_retries(
     headers: dict[str, str],
     content: bytes,
 ) -> httpx.Response:
+    if BACKEND_RETRIES < 1:
+        raise ValueError("GATEWAY_BACKEND_RETRIES must be at least 1")
+
+    last_exc: Exception | None = None
     async with httpx.AsyncClient(timeout=BACKEND_TIMEOUT) as client:
         for attempt in range(1, BACKEND_RETRIES + 1):
             try:
@@ -212,12 +216,16 @@ async def _request_with_retries(
                     headers=headers,
                     content=content,
                 )
-            except (httpx.ConnectError, httpx.TimeoutException):
+            except (httpx.ConnectError, httpx.TimeoutException) as exc:
+                last_exc = exc
                 if attempt == BACKEND_RETRIES:
-                    raise
+                    break
+                # Exponential backoff: BACKOFF_BASE, 2x, 4x, ...
                 backoff_seconds = BACKOFF_BASE * (2 ** (attempt - 1))
                 await asyncio.sleep(backoff_seconds)
-    raise RuntimeError("Retry loop completed without returning a response")
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError("Retry loop exhausted without a backend response")
 
 
 def _launch_process(key: str) -> None:
@@ -397,7 +405,7 @@ async def gateway_health() -> dict[str, Any]:
 
 @app.get("/health/ready")
 async def gateway_ready(request: Request) -> JSONResponse:
-    typedb_ok = _typedb_ready(getattr(request.app.state, "typedb_driver", None))
+    typedb_ok = _typedb_ready(request.app.state.typedb_driver)
     checked_models = {
         key: await _is_healthy(key)
         for key, cfg in MODEL_REGISTRY.items()

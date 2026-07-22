@@ -9,7 +9,7 @@ DEFAULT_TOKEN_BUDGET = int(os.getenv("KORTEX_GRAPHRAG_TOKEN_BUDGET", "1200"))
 
 
 def estimate_token_count(text: str) -> int:
-    """Approximate tokens using four characters per token for budget checks."""
+    """Approximate English/ASCII-heavy token counts using four characters per token."""
     text = text.strip()
     if not text:
         return 0
@@ -44,8 +44,11 @@ def prune_nodes_to_token_budget(
     pruned: list[dict[str, Any]] = []
     tokens_used = 0
     for node in ordered:
-        token_count = int(node.get("token_count") or estimate_token_count(str(node.get("content", ""))))
-        if token_count <= 0 or tokens_used + token_count > token_budget:
+        token_count = max(
+            0,
+            int(node.get("token_count") or estimate_token_count(str(node.get("content", "")))),
+        )
+        if token_count == 0 or tokens_used + token_count > token_budget:
             continue
         node["token_count"] = token_count
         pruned.append(node)
