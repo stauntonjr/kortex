@@ -215,8 +215,9 @@ async def _request_with_retries(
             except (httpx.ConnectError, httpx.TimeoutException):
                 if attempt == BACKEND_RETRIES:
                     raise
-                await asyncio.sleep(BACKOFF_BASE * (2 ** (attempt - 1)))
-    raise RuntimeError("unreachable")
+                backoff_seconds = BACKOFF_BASE * (2 ** (attempt - 1))
+                await asyncio.sleep(backoff_seconds)
+    raise RuntimeError("Retry loop completed without returning a response")
 
 
 def _launch_process(key: str) -> None:
@@ -400,7 +401,7 @@ async def gateway_ready(request: Request) -> JSONResponse:
     checked_models = {
         key: await _is_healthy(key)
         for key, cfg in MODEL_REGISTRY.items()
-        if cfg.get("process") is not None or cfg.get("healthy")
+        if cfg.get("process") is not None or cfg.get("healthy", False)
     }
     models_ok = any(checked_models.values())
     ready = typedb_ok and models_ok

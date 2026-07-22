@@ -201,7 +201,7 @@ class TestTypeDBOptions:
 
 
 class TestTypeDBOperations:
-    def test_bootstrap_applies_schema_with_timeout_guard(self, tmp_path):
+    def test_bootstrap_applies_schema_with_timeout_options(self, tmp_path):
         schema = tmp_path / "schema.tql"
         schema.write_text("define code-entity sub entity;")
 
@@ -226,7 +226,7 @@ class TestTypeDBOperations:
         tx.query.assert_called_once_with("define code-entity sub entity;")
         tx.commit.assert_called_once()
 
-    def test_upsert_maps_chunk_fields_with_timeout_guarded_transactions(self):
+    def test_upsert_applies_timeout_options_to_transactions(self):
         chunk = CodeChunk(
             entity_id="entity-1",
             kind="file",

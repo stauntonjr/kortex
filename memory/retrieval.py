@@ -9,6 +9,7 @@ DEFAULT_TOKEN_BUDGET = int(os.getenv("KORTEX_GRAPHRAG_TOKEN_BUDGET", "1200"))
 
 
 def estimate_token_count(text: str) -> int:
+    """Approximate tokens using four characters per token for budget checks."""
     text = text.strip()
     if not text:
         return 0
@@ -58,6 +59,7 @@ def build_memory_context(
     max_depth: int = MAX_TRAVERSAL_DEPTH,
     token_budget: int = DEFAULT_TOKEN_BUDGET,
 ) -> str | None:
+    """Format bounded graph nodes into a single system-context string."""
     bounded_nodes = prune_nodes_to_token_budget(
         limit_traversal_depth(nodes, max_depth=max_depth),
         token_budget=token_budget,
