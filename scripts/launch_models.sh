@@ -2,8 +2,8 @@
 # launch_models.sh — Boot core always-on models for Kortex.
 #
 # Models started here are designed to co-exist within VRAM budget:
-#   Qwen3-VL-Embedding 8B  ~19.7 GB  (port 8001) — GraphRAG vector indexing
-#   Qwen3-Coder-Next Int4  ~52.5 GB  (port 8002) — Tab-autocomplete & agent loop
+#   Qwen2.5-VL-7B  ~19.7 GB  (port 8001) — GraphRAG vector indexing
+#   Qwen2.5-Coder-32B-Instruct-GPTQ-Int4  ~52.5 GB  (port 8002) — Tab-autocomplete & agent loop
 #
 # Total baseline VRAM: ~72.2 GB  (leaves ~48.8 GB headroom on 121 GB node)
 #

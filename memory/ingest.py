@@ -47,7 +47,6 @@ TYPEDB_ADDR       = os.getenv("TYPEDB_ADDR",       "localhost:1729")
 TYPEDB_DATABASE   = os.getenv("TYPEDB_DATABASE",   "kortex")
 TYPEDB_USERNAME   = os.getenv("TYPEDB_USERNAME",   "admin")
 TYPEDB_PASSWORD   = os.getenv("TYPEDB_PASSWORD",   "password")
-TYPEDB_DATABASE   = os.getenv("TYPEDB_DATABASE",   "kortex")
 QDRANT_ADDR       = os.getenv("QDRANT_ADDR",       "http://localhost:6333")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "kortex_code")
 EMBEDDING_URL     = os.getenv("EMBEDDING_URL",      "http://localhost:8080/v1")
@@ -84,7 +83,7 @@ def extract_chunks(source_path: Path, language: str) -> list[CodeChunk]:
     text = source_path.read_text(errors="replace")
     chunks: list[CodeChunk] = []
     step = CHUNK_SIZE // 2  # 50 % overlap
-    for i, start in enumerate(range(0, max(len(text), 1), step)):
+    for i, start in enumerate(range(0, len(text), step)):
         content = text[start : start + CHUNK_SIZE]
         if not content.strip():
             continue

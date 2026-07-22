@@ -197,7 +197,8 @@ def _launch_process(key: str) -> None:
         return
     log_dir = "/tmp/kortex/logs"
     os.makedirs(log_dir, exist_ok=True)
-    log_file = open(f"{log_dir}/{key}.log", "a")  # noqa: WPS515
+    log_file = open(f"{log_dir}/{key}.log", "a")  # noqa: SIM115
+    cfg["_log_file"] = log_file
     cmd = ["sparkrun"] + cfg["sparkrun_args"]
     logger.info("Launching model '%s': %s", key, " ".join(cmd))
     cfg["process"] = subprocess.Popen(
@@ -222,6 +223,10 @@ def _stop_process(key: str) -> None:
         proc.wait()
     cfg["process"] = None
     cfg["healthy"] = False
+    # Close the log file handle that was opened during launch
+    log_file = cfg.pop("_log_file", None)
+    if log_file is not None:
+        log_file.close()
     logger.info("Model '%s' stopped.", key)
 
 

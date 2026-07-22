@@ -13,7 +13,7 @@
       }
     },
     {
-      "title": "Kortex Reasoning (Qwen3.6-35B MoE)",
+      "title": "Kortex Reasoning (Qwen3-30B-A3B MoE FP8)",
       "provider": "openai",
       "model": "reasoning",
       "apiBase": "http://localhost:8080/v1",
@@ -25,7 +25,7 @@
       }
     },
     {
-      "title": "Kortex Planning (Nemotron 120B)",
+      "title": "Kortex Planning (Nemotron Ultra 253B)",
       "provider": "openai",
       "model": "planning",
       "apiBase": "http://localhost:8080/v1",
