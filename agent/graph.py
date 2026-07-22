@@ -27,9 +27,26 @@ import logging
 import httpx
 from langgraph.graph import END, StateGraph
 
+from memory.retrieval import build_memory_context
 from agent.state import COMPLEXITY_MAP, WorkflowState
 
 logger = logging.getLogger(__name__)
+
+def _build_gateway_messages(state: WorkflowState) -> list[dict[str, str]]:
+    messages = list(state.get("messages", []))
+    memory_nodes = state.get("memory_nodes") or []
+    if not memory_nodes:
+        return messages
+
+    memory_context = build_memory_context(
+        memory_nodes,
+        max_depth=state.get("memory_max_depth", 3),
+        token_budget=state.get("memory_token_budget", 1200),
+    )
+    if not memory_context:
+        return messages
+    return [{"role": "system", "content": memory_context}, *messages]
+
 
 # ---------------------------------------------------------------------------
 # Keyword sets used by the classifier
@@ -117,7 +134,7 @@ async def execute_node(state: WorkflowState) -> dict:
     url = f"{gateway_url}/chat/completions"
     payload: dict = {
         "model":    state["model_key"],
-        "messages": state.get("messages", []),
+        "messages": _build_gateway_messages(state),
     }
 
     logger.info("Executing via gateway model '%s' at %s", state["model_key"], url)

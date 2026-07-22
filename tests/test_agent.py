@@ -17,6 +17,7 @@ import pytest
 
 from agent.graph import (
     _classify,
+    _build_gateway_messages,
     _COMPLEX_WORD_THRESHOLD,
     _SIMPLE_WORD_THRESHOLD,
     build_graph,
@@ -219,3 +220,22 @@ class TestBuildGraph:
         assert result["response"] == "done"
         assert result["model_key"] == "qwen-coder"
         assert result["task_complexity"] == "simple"
+
+
+class TestMemoryContext:
+    def test_memory_context_is_depth_limited_and_pruned_to_token_budget(self):
+        state = _make_state("fix typo")
+        state["memory_nodes"] = [
+            {"name": "deep", "content": "ignored", "depth": 4, "score": 1.0},
+            {"name": "fit", "content": "A" * 20, "depth": 1, "score": 0.9},
+            {"name": "overflow", "content": "B" * 80, "depth": 2, "score": 0.8},
+        ]
+        state["memory_max_depth"] = 3
+        state["memory_token_budget"] = 12
+
+        messages = _build_gateway_messages(state)
+
+        assert messages[0]["role"] == "system"
+        assert "fit" in messages[0]["content"]
+        assert "overflow" not in messages[0]["content"]
+        assert "deep" not in messages[0]["content"]

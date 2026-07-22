@@ -35,7 +35,8 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
+from typedb.driver import Credentials, DriverOptions, DriverTlsConfig, TypeDB
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,14 @@ logger = logging.getLogger(__name__)
 POLL_INTERVAL   = int(os.getenv("GATEWAY_POLL_INTERVAL",   "15"))
 STARTUP_TIMEOUT = int(os.getenv("GATEWAY_STARTUP_TIMEOUT", "180"))
 REDIS_URL       = os.getenv("REDIS_URL", "redis://localhost:6379/0")
+BACKEND_TIMEOUT = int(os.getenv("GATEWAY_BACKEND_TIMEOUT", "300"))
+BACKEND_RETRIES = int(os.getenv("GATEWAY_BACKEND_RETRIES", "3"))
+BACKOFF_BASE    = float(os.getenv("GATEWAY_BACKOFF_BASE", "0.25"))
+TYPEDB_ADDR     = os.getenv("TYPEDB_ADDR", "localhost:1729")
+TYPEDB_DATABASE = os.getenv("TYPEDB_DATABASE", "kortex")
+TYPEDB_USERNAME = os.getenv("TYPEDB_USERNAME", "admin")
+TYPEDB_PASSWORD = os.getenv("TYPEDB_PASSWORD", "password")
+TYPEDB_REQUEST_TIMEOUT_MILLIS = int(os.getenv("TYPEDB_REQUEST_TIMEOUT_MILLIS", "15000"))
 
 # Forwarded headers that must not be re-sent to the backend
 _HOP_BY_HOP = frozenset(
@@ -143,6 +152,27 @@ def _backend_url(key: str) -> str:
     return f"http://127.0.0.1:{MODEL_REGISTRY[key]['port']}"
 
 
+def _build_typedb_driver_options() -> DriverOptions:
+    return DriverOptions(
+        DriverTlsConfig.disabled(),
+        request_timeout_millis=TYPEDB_REQUEST_TIMEOUT_MILLIS,
+    )
+
+
+def _open_typedb_driver():
+    credentials = Credentials(TYPEDB_USERNAME, TYPEDB_PASSWORD)
+    return TypeDB.driver(TYPEDB_ADDR, credentials, _build_typedb_driver_options())
+
+
+def _typedb_ready(driver: Any | None) -> bool:
+    if driver is None:
+        return False
+    try:
+        return driver.databases.contains(TYPEDB_DATABASE)
+    except Exception:
+        return False
+
+
 async def _is_healthy(key: str) -> bool:
     cfg = MODEL_REGISTRY[key]
     url = f"{_backend_url(key)}/health"
@@ -165,6 +195,28 @@ async def _wait_healthy(key: str, timeout: int = STARTUP_TIMEOUT) -> bool:
         await asyncio.sleep(5)
     logger.error("Model '%s' did not become healthy within %ds.", key, timeout)
     return False
+
+
+async def _request_with_retries(
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    content: bytes,
+) -> httpx.Response:
+    async with httpx.AsyncClient(timeout=BACKEND_TIMEOUT) as client:
+        for attempt in range(1, BACKEND_RETRIES + 1):
+            try:
+                return await client.request(
+                    method=method,
+                    url=url,
+                    headers=headers,
+                    content=content,
+                )
+            except (httpx.ConnectError, httpx.TimeoutException):
+                if attempt == BACKEND_RETRIES:
+                    raise
+                await asyncio.sleep(BACKOFF_BASE * (2 ** (attempt - 1)))
+    raise RuntimeError("unreachable")
 
 
 def _launch_process(key: str) -> None:
@@ -291,6 +343,11 @@ _install_signal_handlers()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    app.state.typedb_driver = None
+    try:
+        app.state.typedb_driver = _open_typedb_driver()
+    except Exception as exc:
+        logger.warning("TypeDB driver unavailable during startup: %s", exc)
     # Start background health-polling task
     poll_task = asyncio.create_task(_health_poll_loop())
     try:
@@ -301,6 +358,10 @@ async def lifespan(app: FastAPI):
             await poll_task
         # Ensure all model processes are stopped on graceful shutdown
         _shutdown_all_models()
+        driver = getattr(app.state, "typedb_driver", None)
+        if driver is not None:
+            with contextlib.suppress(Exception):
+                driver.close()
 
 
 # ---------------------------------------------------------------------------
@@ -331,6 +392,26 @@ async def gateway_health() -> dict[str, Any]:
         for key, cfg in MODEL_REGISTRY.items()
     }
     return {"status": "ok", "models": statuses}
+
+
+@app.get("/health/ready")
+async def gateway_ready(request: Request) -> JSONResponse:
+    typedb_ok = _typedb_ready(getattr(request.app.state, "typedb_driver", None))
+    checked_models = {
+        key: await _is_healthy(key)
+        for key, cfg in MODEL_REGISTRY.items()
+        if cfg.get("process") is not None or cfg.get("healthy")
+    }
+    models_ok = any(checked_models.values())
+    ready = typedb_ok and models_ok
+    return JSONResponse(
+        status_code=200 if ready else 503,
+        content={
+            "status": "ready" if ready else "not_ready",
+            "typedb": {"ready": typedb_ok, "database": TYPEDB_DATABASE},
+            "models": checked_models,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -422,19 +503,18 @@ async def proxy(path: str, request: Request) -> Response:
 
     body = await request.body()
 
-    async with httpx.AsyncClient(timeout=300) as client:
-        try:
-            backend_resp = await client.request(
-                method=request.method,
-                url=url,
-                headers=headers,
-                content=body,
-            )
-        except httpx.ConnectError as exc:
-            raise HTTPException(
-                status_code=503,
-                detail=f"Backend for model '{model_key}' is not reachable: {exc}",
-            ) from exc
+    try:
+        backend_resp = await _request_with_retries(
+            method=request.method,
+            url=url,
+            headers=headers,
+            content=body,
+        )
+    except (httpx.ConnectError, httpx.TimeoutException) as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Backend for model '{model_key}' is not reachable: {exc}",
+        ) from exc
 
     # Detect streaming responses and forward them
     content_type = backend_resp.headers.get("content-type", "")
