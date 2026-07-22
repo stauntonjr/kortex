@@ -24,6 +24,7 @@ import hashlib
 import logging
 import os
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Sequence
@@ -35,7 +36,14 @@ from qdrant_client.http.models import (
     PointStruct,
     VectorParams,
 )
-from typedb.driver import Credentials, DriverOptions, TransactionType, TypeDB
+from typedb.driver import (
+    Credentials,
+    DriverOptions,
+    DriverTlsConfig,
+    TransactionOptions,
+    TransactionType,
+    TypeDB,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +61,13 @@ EMBEDDING_URL     = os.getenv("EMBEDDING_URL",      "http://localhost:8080/v1")
 EMBEDDING_MODEL   = os.getenv("EMBEDDING_MODEL",    "embedding")
 EMBEDDING_DIM     = int(os.getenv("EMBEDDING_DIM", "3584"))   # Qwen2.5-VL-7B
 CHUNK_SIZE        = int(os.getenv("CHUNK_SIZE",    "512"))    # characters
+TYPEDB_REQUEST_TIMEOUT_MILLIS = int(os.getenv("TYPEDB_REQUEST_TIMEOUT_MILLIS", "15000"))
+TYPEDB_TRANSACTION_TIMEOUT_MILLIS = int(
+    os.getenv("TYPEDB_TRANSACTION_TIMEOUT_MILLIS", "30000")
+)
+TYPEDB_SCHEMA_LOCK_TIMEOUT_MILLIS = int(
+    os.getenv("TYPEDB_SCHEMA_LOCK_TIMEOUT_MILLIS", "15000")
+)
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +188,30 @@ async def upsert_to_qdrant(
 # TypeDB upsert
 # ---------------------------------------------------------------------------
 
+
+def build_typedb_driver_options() -> DriverOptions:
+    return DriverOptions(
+        DriverTlsConfig.disabled(),
+        request_timeout_millis=TYPEDB_REQUEST_TIMEOUT_MILLIS,
+    )
+
+
+def build_typedb_transaction_options(transaction_type: TransactionType) -> TransactionOptions:
+    kwargs = {"transaction_timeout_millis": TYPEDB_TRANSACTION_TIMEOUT_MILLIS}
+    if transaction_type == TransactionType.SCHEMA:
+        kwargs["schema_lock_acquire_timeout_millis"] = TYPEDB_SCHEMA_LOCK_TIMEOUT_MILLIS
+    return TransactionOptions(**kwargs)
+
+
+@contextmanager
+def typedb_transaction(driver, database: str, transaction_type: TransactionType):
+    with driver.transaction(
+        database,
+        transaction_type,
+        options=build_typedb_transaction_options(transaction_type),
+    ) as tx:
+        yield tx
+
 def upsert_to_typedb(
     driver,
     chunks: list[CodeChunk],
@@ -184,13 +223,13 @@ def upsert_to_typedb(
     from the driver against a named database.
     """
     for chunk in chunks:
-        with driver.transaction(database, TransactionType.READ) as tx:
+        with typedb_transaction(driver, database, TransactionType.READ) as tx:
             existing = list(
                 tx.query(f'match $e isa code-entity, has entity-id "{chunk.entity_id}";')
             )
 
         if existing:
-            with driver.transaction(database, TransactionType.WRITE) as tx:
+            with typedb_transaction(driver, database, TransactionType.WRITE) as tx:
                 tx.query(
                     f"""
                     match
@@ -205,7 +244,7 @@ def upsert_to_typedb(
                 )
                 tx.commit()
         else:
-            with driver.transaction(database, TransactionType.WRITE) as tx:
+            with typedb_transaction(driver, database, TransactionType.WRITE) as tx:
                 tx.query(
                     f"""
                     insert $e isa code-entity,
@@ -237,7 +276,7 @@ def bootstrap_typedb(driver, database: str, schema_path: Path) -> None:
         driver.databases.create(database)
         logger.info("Created TypeDB database '%s'.", database)
         schema_tql = schema_path.read_text()
-        with driver.transaction(database, TransactionType.SCHEMA) as tx:
+        with typedb_transaction(driver, database, TransactionType.SCHEMA) as tx:
             tx.query(schema_tql)
             tx.commit()
         logger.info("Applied schema from '%s'.", schema_path)
@@ -276,7 +315,7 @@ async def ingest(root: Path, language: str) -> None:
 
     # TypeDB
     credentials = Credentials(TYPEDB_USERNAME, TYPEDB_PASSWORD)
-    with TypeDB.driver(TYPEDB_ADDR, credentials, DriverOptions()) as driver:
+    with TypeDB.driver(TYPEDB_ADDR, credentials, build_typedb_driver_options()) as driver:
         bootstrap_typedb(driver, TYPEDB_DATABASE, schema_path)
         upsert_to_typedb(driver, all_chunks, TYPEDB_DATABASE)
 

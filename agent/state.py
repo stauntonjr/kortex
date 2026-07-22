@@ -18,12 +18,14 @@ gateway_url
     Base URL for the Kortex gateway, e.g. ``"http://localhost:8080/v1"``.
 response
     Final assistant response text, set by the execute node.
+memory_nodes
+    Optional hypergraph retrieval nodes to prune before sending to the model.
 """
 
 from __future__ import annotations
 
-from typing import Annotated
-from typing_extensions import TypedDict
+from typing import Annotated, Any
+from typing_extensions import NotRequired, TypedDict
 
 # ---------------------------------------------------------------------------
 # Complexity → gateway model mapping
@@ -67,3 +69,12 @@ class WorkflowState(TypedDict):
 
     #: Final assistant response produced by the execute node (None until set).
     response: str | None
+
+    #: Optional TypeDB/GraphRAG nodes that can be injected as bounded context.
+    memory_nodes: NotRequired[list[dict[str, Any]]]
+
+    #: Optional traversal-depth override for memory_nodes.
+    memory_max_depth: NotRequired[int]
+
+    #: Optional token-budget override for memory_nodes.
+    memory_token_budget: NotRequired[int]

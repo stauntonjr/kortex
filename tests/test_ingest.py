@@ -20,10 +20,18 @@ import pytest
 
 from memory.ingest import (
     CHUNK_SIZE,
+    TYPEDB_REQUEST_TIMEOUT_MILLIS,
+    TYPEDB_SCHEMA_LOCK_TIMEOUT_MILLIS,
+    TYPEDB_TRANSACTION_TIMEOUT_MILLIS,
     CodeChunk,
+    bootstrap_typedb,
+    build_typedb_driver_options,
+    build_typedb_transaction_options,
     discover_sources,
     extract_chunks,
+    upsert_to_typedb,
 )
+from typedb.driver import TransactionType
 
 
 # ---------------------------------------------------------------------------
@@ -173,3 +181,88 @@ class TestDiscoverSources:
 
     def test_empty_directory_returns_empty_list(self, tmp_path):
         assert discover_sources(tmp_path, "python") == []
+
+
+class TestTypeDBOptions:
+    def test_driver_options_set_request_timeout(self):
+        options = build_typedb_driver_options()
+        assert options.request_timeout_millis == TYPEDB_REQUEST_TIMEOUT_MILLIS
+        assert options.tls_config.is_enabled is False
+
+    def test_write_transaction_options_set_timeout(self):
+        options = build_typedb_transaction_options(TransactionType.WRITE)
+        assert options.transaction_timeout_millis == TYPEDB_TRANSACTION_TIMEOUT_MILLIS
+        assert options.schema_lock_acquire_timeout_millis is None
+
+    def test_schema_transaction_options_set_both_timeouts(self):
+        options = build_typedb_transaction_options(TransactionType.SCHEMA)
+        assert options.transaction_timeout_millis == TYPEDB_TRANSACTION_TIMEOUT_MILLIS
+        assert options.schema_lock_acquire_timeout_millis == TYPEDB_SCHEMA_LOCK_TIMEOUT_MILLIS
+
+
+class TestTypeDBOperations:
+    def test_bootstrap_applies_schema_with_timeout_options(self, tmp_path):
+        schema = tmp_path / "schema.tql"
+        schema.write_text("define code-entity sub entity;")
+
+        tx = MagicMock()
+        tx_cm = MagicMock()
+        tx_cm.__enter__.return_value = tx
+        tx_cm.__exit__.return_value = False
+
+        driver = MagicMock()
+        driver.databases.all.return_value = []
+        driver.transaction.return_value = tx_cm
+
+        bootstrap_typedb(driver, "kortex", schema)
+
+        driver.databases.create.assert_called_once_with("kortex")
+        call = driver.transaction.call_args
+        assert call.args[:2] == ("kortex", TransactionType.SCHEMA)
+        assert call.kwargs["options"].transaction_timeout_millis == TYPEDB_TRANSACTION_TIMEOUT_MILLIS
+        assert call.kwargs["options"].schema_lock_acquire_timeout_millis == (
+            TYPEDB_SCHEMA_LOCK_TIMEOUT_MILLIS
+        )
+        tx.query.assert_called_once_with("define code-entity sub entity;")
+        tx.commit.assert_called_once()
+
+    def test_upsert_applies_timeout_options_to_transactions(self):
+        chunk = CodeChunk(
+            entity_id="entity-1",
+            kind="file",
+            name="mod.py#0",
+            path="/src/mod.py",
+            language="python",
+            content="print('hello')",
+        )
+
+        read_tx = MagicMock()
+        read_tx.query.return_value = []
+        read_cm = MagicMock()
+        read_cm.__enter__.return_value = read_tx
+        read_cm.__exit__.return_value = False
+
+        write_tx = MagicMock()
+        write_cm = MagicMock()
+        write_cm.__enter__.return_value = write_tx
+        write_cm.__exit__.return_value = False
+
+        driver = MagicMock()
+        driver.transaction.side_effect = [read_cm, write_cm]
+
+        upsert_to_typedb(driver, [chunk], "kortex")
+
+        read_call, write_call = driver.transaction.call_args_list
+        assert read_call.args[:2] == ("kortex", TransactionType.READ)
+        assert write_call.args[:2] == ("kortex", TransactionType.WRITE)
+        assert read_call.kwargs["options"].transaction_timeout_millis == (
+            TYPEDB_TRANSACTION_TIMEOUT_MILLIS
+        )
+        assert write_call.kwargs["options"].transaction_timeout_millis == (
+            TYPEDB_TRANSACTION_TIMEOUT_MILLIS
+        )
+        insert_query = write_tx.query.call_args.args[0]
+        assert 'has entity-id    "entity-1"' in insert_query
+        assert 'has entity-path  "/src/mod.py"' in insert_query
+        assert 'has language     "python"' in insert_query
+        write_tx.commit.assert_called_once()
