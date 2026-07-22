@@ -216,3 +216,24 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Ignore generated or temporary files managed by the Workbench
+.project/*
+!.project/spec.yaml
+!.project/configpacks
+
+# General ignores
+.DS_Store
+
+*.py[cod]
+
+# Temp directories, notebooks created by jupyterlab
+.Trash-*/
+.jupyter/
+.local/
+
+# Python distribution / packaging
+
+*.py,cover
+
+# Workbench Project Layout
