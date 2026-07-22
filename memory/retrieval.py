@@ -9,7 +9,7 @@ DEFAULT_TOKEN_BUDGET = int(os.getenv("KORTEX_GRAPHRAG_TOKEN_BUDGET", "1200"))
 
 
 def estimate_token_count(text: str) -> int:
-    """Approximate English/ASCII-heavy token counts using four characters per token."""
+    """Approximate token counts using a simple four-characters-per-token heuristic."""
     text = text.strip()
     if not text:
         return 0

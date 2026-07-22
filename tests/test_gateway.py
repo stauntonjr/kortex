@@ -328,6 +328,29 @@ class TestGatewayEndpoints:
         assert mock_req.await_count == 2
         mock_sleep.assert_awaited_once()
 
+    def test_proxy_retries_backend_timeouts(self, test_client):
+        fake_response = httpx.Response(200, json={"choices": [{"message": {"content": "hello"}}]})
+
+        with (
+            patch("gateway.gateway.ensure_model_online", new_callable=AsyncMock),
+            patch(
+                "gateway.gateway.httpx.AsyncClient.request",
+                new_callable=AsyncMock,
+                side_effect=[httpx.TimeoutException("timed out"), fake_response],
+            ) as mock_req,
+            patch("gateway.gateway.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            body = json.dumps({"model": "qwen-coder", "messages": [{"role": "user", "content": "hi"}]})
+            resp = test_client.post(
+                "/v1/chat/completions",
+                content=body,
+                headers={"content-type": "application/json"},
+            )
+
+        assert resp.status_code == 200
+        assert mock_req.await_count == 2
+        mock_sleep.assert_awaited_once()
+
     def test_proxy_falls_back_to_qwen_coder_for_unknown_model(self, test_client):
         fake_response = httpx.Response(200, json={"ok": True})
 

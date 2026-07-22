@@ -56,6 +56,9 @@ TYPEDB_USERNAME = os.getenv("TYPEDB_USERNAME", "admin")
 TYPEDB_PASSWORD = os.getenv("TYPEDB_PASSWORD", "password")
 TYPEDB_REQUEST_TIMEOUT_MILLIS = int(os.getenv("TYPEDB_REQUEST_TIMEOUT_MILLIS", "15000"))
 
+if BACKEND_RETRIES < 1:
+    raise ValueError("GATEWAY_BACKEND_RETRIES must be at least 1")
+
 # Forwarded headers that must not be re-sent to the backend
 _HOP_BY_HOP = frozenset(
     [
@@ -203,9 +206,6 @@ async def _request_with_retries(
     headers: dict[str, str],
     content: bytes,
 ) -> httpx.Response:
-    if BACKEND_RETRIES < 1:
-        raise ValueError("GATEWAY_BACKEND_RETRIES must be at least 1")
-
     last_exc: Exception | None = None
     async with httpx.AsyncClient(timeout=BACKEND_TIMEOUT) as client:
         for attempt in range(1, BACKEND_RETRIES + 1):
@@ -220,7 +220,7 @@ async def _request_with_retries(
                 last_exc = exc
                 if attempt == BACKEND_RETRIES:
                     break
-                # Exponential backoff: BACKOFF_BASE, 2x, 4x, ...
+                # Exponential backoff, e.g. 0.25s, 0.5s, 1.0s when BACKOFF_BASE=0.25.
                 backoff_seconds = BACKOFF_BASE * (2 ** (attempt - 1))
                 await asyncio.sleep(backoff_seconds)
     if last_exc is not None:

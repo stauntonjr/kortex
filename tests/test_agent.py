@@ -239,3 +239,9 @@ class TestMemoryContext:
         assert "fit" in messages[0]["content"]
         assert "overflow" not in messages[0]["content"]
         assert "deep" not in messages[0]["content"]
+
+    def test_memory_context_returns_messages_unchanged_when_all_nodes_are_filtered(self):
+        state = _make_state("fix typo")
+        state["memory_nodes"] = [{"name": "deep", "content": "ignored", "depth": 4, "score": 1.0}]
+
+        assert _build_gateway_messages(state) == state["messages"]
