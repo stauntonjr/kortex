@@ -14,7 +14,7 @@
   },
   "workspaceFolder": "/workspace/kortex",
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace/kortex,type=bind,consistency=cached",
-  "remoteUser": "vscode",
+  "remoteUser": "workbench",
   "postCreateCommand": "python -m pip install --upgrade pip && python -m pip install -e .[dev] || true",
   "settings": {
     "terminal.integrated.shell.linux": "/bin/bash"
