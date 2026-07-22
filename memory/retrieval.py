@@ -9,7 +9,7 @@ DEFAULT_TOKEN_BUDGET = int(os.getenv("KORTEX_GRAPHRAG_TOKEN_BUDGET", "1200"))
 
 
 def estimate_token_count(text: str) -> int:
-    """Approximate token counts using a simple four-characters-per-token heuristic."""
+    """Approximate token counts with a rough four-characters-per-token heuristic."""
     text = text.strip()
     if not text:
         return 0
@@ -29,6 +29,7 @@ def prune_nodes_to_token_budget(
     *,
     token_budget: int = DEFAULT_TOKEN_BUDGET,
 ) -> list[dict[str, Any]]:
+    """Keep bounded nodes within budget and skip empty nodes that estimate to zero tokens."""
     if token_budget <= 0:
         return []
 

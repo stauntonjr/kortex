@@ -32,7 +32,7 @@ from agent.state import COMPLEXITY_MAP, WorkflowState
 
 logger = logging.getLogger(__name__)
 
-def _build_gateway_messages(state: WorkflowState) -> list[dict[str, str]]:
+def _build_messages_with_context(state: WorkflowState) -> list[dict[str, str]]:
     messages = list(state.get("messages", []))
     memory_nodes = state.get("memory_nodes") or []
     if not memory_nodes:
@@ -134,7 +134,7 @@ async def execute_node(state: WorkflowState) -> dict:
     url = f"{gateway_url}/chat/completions"
     payload: dict = {
         "model":    state["model_key"],
-        "messages": _build_gateway_messages(state),
+        "messages": _build_messages_with_context(state),
     }
 
     logger.info("Executing via gateway model '%s' at %s", state["model_key"], url)

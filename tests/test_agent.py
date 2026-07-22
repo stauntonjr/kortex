@@ -17,7 +17,7 @@ import pytest
 
 from agent.graph import (
     _classify,
-    _build_gateway_messages,
+    _build_messages_with_context,
     _COMPLEX_WORD_THRESHOLD,
     _SIMPLE_WORD_THRESHOLD,
     build_graph,
@@ -233,7 +233,7 @@ class TestMemoryContext:
         state["memory_max_depth"] = 3
         state["memory_token_budget"] = 12
 
-        messages = _build_gateway_messages(state)
+        messages = _build_messages_with_context(state)
 
         assert messages[0]["role"] == "system"
         assert "fit" in messages[0]["content"]
@@ -244,4 +244,4 @@ class TestMemoryContext:
         state = _make_state("fix typo")
         state["memory_nodes"] = [{"name": "deep", "content": "ignored", "depth": 4, "score": 1.0}]
 
-        assert _build_gateway_messages(state) == state["messages"]
+        assert _build_messages_with_context(state) == state["messages"]

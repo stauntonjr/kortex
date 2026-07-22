@@ -50,6 +50,7 @@ REDIS_URL       = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 BACKEND_TIMEOUT = int(os.getenv("GATEWAY_BACKEND_TIMEOUT", "300"))
 BACKEND_RETRIES = int(os.getenv("GATEWAY_BACKEND_RETRIES", "3"))
 BACKOFF_BASE    = float(os.getenv("GATEWAY_BACKOFF_BASE", "0.25"))
+BACKOFF_MAX     = float(os.getenv("GATEWAY_BACKOFF_MAX", "2.0"))
 TYPEDB_ADDR     = os.getenv("TYPEDB_ADDR", "localhost:1729")
 TYPEDB_DATABASE = os.getenv("TYPEDB_DATABASE", "kortex")
 TYPEDB_USERNAME = os.getenv("TYPEDB_USERNAME", "admin")
@@ -221,7 +222,7 @@ async def _request_with_retries(
                 if attempt == BACKEND_RETRIES:
                     break
                 # Exponential backoff, e.g. 0.25s, 0.5s, 1.0s when BACKOFF_BASE=0.25.
-                backoff_seconds = BACKOFF_BASE * (2 ** (attempt - 1))
+                backoff_seconds = min(BACKOFF_MAX, BACKOFF_BASE * (2 ** (attempt - 1)))
                 await asyncio.sleep(backoff_seconds)
     if last_exc is not None:
         raise last_exc
@@ -369,8 +370,10 @@ async def lifespan(app: FastAPI):
         _shutdown_all_models()
         driver = getattr(app.state, "typedb_driver", None)
         if driver is not None:
-            with contextlib.suppress(Exception):
+            try:
                 driver.close()
+            except Exception as exc:
+                logger.warning("Failed to close TypeDB driver cleanly: %s", exc)
 
 
 # ---------------------------------------------------------------------------
