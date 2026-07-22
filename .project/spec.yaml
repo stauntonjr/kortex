@@ -3,7 +3,8 @@
 # Targets a single DGX Spark node with 121 GB unified VRAM.
 # https://docs.nvidia.com/ai-workbench/user-guide/latest/spec.html
 
-specVersion: v1
+specVersion: v2
+specMinorVersion: 2
 
 meta:
   name: kortex
@@ -24,6 +25,13 @@ environment:
     # CUDA 12.4 + cuDNN for vLLM/sparkrun compatibility on DGX Spark
     image: nvcr.io/nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
     build_timestamp: "20240601000000"
+    schema_version: v2
+    registry: nvcr.io
+    name: kortex-base
+    description: "CUDA 12.4 base image for kortex dev/runtime"
+    os: linux
+    os_distro: ubuntu
+    os_distro_release: "22.04"
   packages:
     system:
       - curl
@@ -171,3 +179,16 @@ entry:
   # Default command AI Workbench should use to run the gateway service when
   # launching the project in the workbench UI. Match `pyproject.toml`'s script.
   command: ["python", "-m", "gateway.gateway"]
+
+execution:
+  apps: []
+  resources:
+    gpu:
+      requested: 1
+    sharedMemoryMB: 16384
+  secrets: []
+  mounts:
+    - type: project
+      target: /project/
+      description: Project directory
+      options: rw
