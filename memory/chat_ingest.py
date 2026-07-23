@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
 
-from qdrant_client.http.models import PointStruct
+import httpx
+from qdrant_client import AsyncQdrantClient
+from qdrant_client.http.models import Distance, PointStruct, VectorParams
+from typedb.driver import TypeDB
 
 from kortex.contracts import GatewayResult, TranscriptTurn, TranscriptWritebackEvent
 from memory.ingest import (
@@ -17,6 +22,15 @@ from memory.ingest import (
     ChatTurnRecord,
     DirectiveRecord,
     build_chat_memory_queries,
+    build_typedb_credentials,
+    build_typedb_driver_options,
+    bootstrap_typedb,
+    EMBEDDING_DIM,
+    EMBEDDING_MODEL,
+    EMBEDDING_URL,
+    QDRANT_ADDR,
+    TYPEDB_ADDR,
+    TYPEDB_DATABASE,
     upsert_chat_session_to_typedb,
 )
 
@@ -56,6 +70,20 @@ class TranscriptIngestionBatch:
 
 EmbeddingFunction = Callable[[tuple[ChatEmbeddingDocument, ...]], Awaitable[list[list[float]]]]
 QdrantUpsertFunction = Callable[[list[PointStruct]], Awaitable[None]]
+
+PERSIST_TO_TYPEDB = os.getenv("KORTEX_CHAT_PERSIST_TYPEDB", "1").lower() not in {
+    "0",
+    "false",
+    "no",
+}
+PERSIST_TO_QDRANT = os.getenv("KORTEX_CHAT_PERSIST_QDRANT", "1").lower() not in {
+    "0",
+    "false",
+    "no",
+}
+CHAT_QDRANT_COLLECTION = os.getenv("KORTEX_CHAT_QDRANT_COLLECTION", "kortex_chat")
+CHAT_TYPEDB_DATABASE = os.getenv("KORTEX_CHAT_TYPEDB_DATABASE", TYPEDB_DATABASE)
+CHAT_EMBEDDING_MODEL = os.getenv("KORTEX_CHAT_EMBEDDING_MODEL", EMBEDDING_MODEL)
 
 
 def _stable_id(kind: str, value: str) -> str:
@@ -239,6 +267,50 @@ def build_qdrant_points(
     ]
 
 
+@contextmanager
+def open_default_typedb_driver():
+    creds = build_typedb_credentials()
+    options = build_typedb_driver_options()
+    if creds is not None:
+        with TypeDB.driver(TYPEDB_ADDR, creds, options) as driver:
+            yield driver
+        return
+    with TypeDB.driver(TYPEDB_ADDR, options) as driver:
+        yield driver
+
+
+def build_default_embedder() -> EmbeddingFunction:
+    async def _embedder(documents: tuple[ChatEmbeddingDocument, ...]) -> list[list[float]]:
+        async with httpx.AsyncClient(timeout=120) as client:
+            payload = {
+                "model": CHAT_EMBEDDING_MODEL,
+                "input": [document.content for document in documents],
+            }
+            response = await client.post(f"{EMBEDDING_URL}/embeddings", json=payload)
+            response.raise_for_status()
+            data = response.json()["data"]
+            return [item["embedding"] for item in data]
+
+    return _embedder
+
+
+def build_default_qdrant_upsert() -> QdrantUpsertFunction:
+    client = AsyncQdrantClient(url=QDRANT_ADDR)
+
+    async def _upsert(points: list[PointStruct]) -> None:
+        if not points:
+            return
+        collections = [item.name for item in (await client.get_collections()).collections]
+        if CHAT_QDRANT_COLLECTION not in collections:
+            await client.create_collection(
+                collection_name=CHAT_QDRANT_COLLECTION,
+                vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
+            )
+        await client.upsert(collection_name=CHAT_QDRANT_COLLECTION, points=points)
+
+    return _upsert
+
+
 async def embed_chat_turns(
     documents: tuple[ChatEmbeddingDocument, ...],
     embedder: EmbeddingFunction,
@@ -282,6 +354,17 @@ async def persist_writeback_event(
     batch = build_ingestion_batch(event)
     if typedb_driver is not None and typedb_database:
         persist_batch_to_typedb(typedb_driver, batch, typedb_database)
+    elif typedb_driver is None and typedb_database is None and PERSIST_TO_TYPEDB:
+        schema_path = Path(__file__).parent / "schema.tql"
+        with open_default_typedb_driver() as driver:
+            bootstrap_typedb(driver, CHAT_TYPEDB_DATABASE, schema_path)
+            persist_batch_to_typedb(driver, batch, CHAT_TYPEDB_DATABASE)
     if embedder is not None and qdrant_upsert is not None:
         await persist_batch_to_qdrant(batch, embedder, qdrant_upsert)
+    elif embedder is None and qdrant_upsert is None and PERSIST_TO_QDRANT:
+        await persist_batch_to_qdrant(
+            batch,
+            build_default_embedder(),
+            build_default_qdrant_upsert(),
+        )
     return batch
