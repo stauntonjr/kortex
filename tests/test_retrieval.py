@@ -12,6 +12,8 @@ from memory.retrieval import (
     build_neighbor_expansion_query,
     build_seed_lookup_query,
     build_memory_context,
+    lookup_entity_with_driver,
+    lookup_neighbors_with_driver,
     merge_retrieval_nodes,
     qdrant_candidate_search,
     retrieve_memory,
@@ -163,6 +165,89 @@ class TestTypeDBExpansion:
         assert nodes[1].kind == "code"
         assert nodes[1].depth == 1
 
+    def test_lookup_entity_with_driver_returns_hydrated_seed(self):
+        seed = RetrievedNode(
+            node_id="turn-1",
+            kind="chat",
+            content="seed text",
+            score=0.9,
+            depth=0,
+            name="turn-1",
+        )
+
+        class FakeTx:
+            def query(self, query_text):
+                assert 'has turn-id "turn-1"' in query_text
+                return [
+                    {
+                        "turn-id": "turn-1",
+                        "content-text": "hydrated seed text",
+                        "source-uri": "chat://session-1#1",
+                    }
+                ]
+
+        class FakeTxContext:
+            def __enter__(self):
+                return FakeTx()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeDriver:
+            def transaction(self, database, transaction_type, options=None):
+                del database, transaction_type, options
+                return FakeTxContext()
+
+        node = lookup_entity_with_driver(FakeDriver(), seed)
+
+        assert node is not None
+        assert node.content == "hydrated seed text"
+        assert node.source_uri == "chat://session-1#1"
+
+    def test_lookup_neighbors_with_driver_returns_unique_neighbors(self):
+        seed = RetrievedNode(
+            node_id="gateway/gateway.py",
+            kind="code",
+            content="seed text",
+            score=0.9,
+            depth=0,
+            name="gateway.py",
+        )
+
+        class FakeTx:
+            def query(self, query_text):
+                assert "(source-turn: $neighbor, target: $seed) isa mention" in query_text
+                return [
+                    {
+                        "turn-id": "turn-1",
+                        "content-text": "chat mention",
+                        "source-uri": "chat://session-1#1",
+                    },
+                    {
+                        "turn-id": "turn-1",
+                        "content-text": "chat mention duplicate",
+                        "source-uri": "chat://session-1#1",
+                    },
+                ]
+
+        class FakeTxContext:
+            def __enter__(self):
+                return FakeTx()
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeDriver:
+            def transaction(self, database, transaction_type, options=None):
+                del database, transaction_type, options
+                return FakeTxContext()
+
+        nodes = lookup_neighbors_with_driver(FakeDriver(), seed, max_depth=1)
+
+        assert len(nodes) == 1
+        assert nodes[0].node_id == "turn-1"
+        assert nodes[0].kind == "chat"
+
 
 class TestMergeRetrievalNodes:
     def test_respects_depth_and_token_budget(self):
@@ -255,6 +340,20 @@ class TestRetrieveMemory:
         assert calls["request"].query == "hello"
         assert calls["qdrant_client"] is client
         assert result.explanation == "ok"
+
+    def test_build_default_memory_retriever_disables_qdrant_compatibility_check(self, monkeypatch):
+        calls = {}
+
+        class FakeClient:
+            def __init__(self, **kwargs):
+                calls.update(kwargs)
+
+        monkeypatch.setattr("memory.retrieval.AsyncQdrantClient", FakeClient)
+
+        retriever = build_default_memory_retriever()
+
+        assert callable(retriever)
+        assert calls["check_compatibility"] is False
 
 
 class TestMemoryContext:

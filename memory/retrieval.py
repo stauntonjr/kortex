@@ -381,6 +381,45 @@ def typedb_expand_with_driver(
     return tuple(expanded.values())
 
 
+def lookup_entity_with_driver(
+    driver: Any,
+    node: RetrievedNode,
+    *,
+    database: str = TYPEDB_DATABASE,
+) -> RetrievedNode | None:
+    with typedb_transaction(driver, database, TransactionType.READ) as tx:
+        rows = _normalize_typedb_rows(tx.query(build_seed_lookup_query(node)))
+    for row in rows:
+        hydrated = _node_from_typedb_payload(row, fallback=node, score=node.score, depth=0)
+        if hydrated is not None:
+            return hydrated
+    return None
+
+
+def lookup_neighbors_with_driver(
+    driver: Any,
+    node: RetrievedNode,
+    *,
+    max_depth: int = 1,
+    database: str = TYPEDB_DATABASE,
+) -> tuple[RetrievedNode, ...]:
+    if max_depth <= 0:
+        return ()
+    with typedb_transaction(driver, database, TransactionType.READ) as tx:
+        rows = _normalize_typedb_rows(tx.query(build_neighbor_expansion_query(node)))
+    neighbors: dict[str, RetrievedNode] = {}
+    for row in rows:
+        neighbor = _node_from_typedb_payload(
+            row,
+            fallback=None,
+            score=max(node.score * 0.85, 0.0),
+            depth=1,
+        )
+        if neighbor is not None and neighbor.node_id != node.node_id:
+            neighbors.setdefault(neighbor.node_id, neighbor)
+    return tuple(neighbors.values())
+
+
 def default_typedb_expand(
     seeds: Sequence[RetrievedNode],
     max_depth: int,
@@ -389,6 +428,20 @@ def default_typedb_expand(
         return ()
     with open_default_typedb_driver() as driver:
         return typedb_expand_with_driver(driver, seeds, max_depth)
+
+
+def lookup_entity(node: RetrievedNode) -> RetrievedNode | None:
+    with open_default_typedb_driver() as driver:
+        return lookup_entity_with_driver(driver, node)
+
+
+def lookup_neighbors(
+    node: RetrievedNode,
+    *,
+    max_depth: int = 1,
+) -> tuple[RetrievedNode, ...]:
+    with open_default_typedb_driver() as driver:
+        return lookup_neighbors_with_driver(driver, node, max_depth=max_depth)
 
 
 def merge_retrieval_nodes(
@@ -457,7 +510,10 @@ def build_default_memory_retriever(
     typedb_expand: TypeDBExpandFunction = default_typedb_expand,
     embed_query: EmbeddingFunction = embed_query_text,
 ) -> Callable[[RetrievalRequest], Awaitable[RetrievalResult]]:
-    client = qdrant_client or AsyncQdrantClient(url=os.getenv("QDRANT_ADDR", "http://localhost:6333"))
+    client = qdrant_client or AsyncQdrantClient(
+        url=os.getenv("QDRANT_ADDR", "http://localhost:6333"),
+        check_compatibility=False,
+    )
 
     async def _retriever(request: RetrievalRequest) -> RetrievalResult:
         return await retrieve_memory(
