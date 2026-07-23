@@ -3,8 +3,13 @@ specMinorVersion: 2
 meta:
     name: stauntonjr-kortex2
     image: project-stauntonjr-kortex2
-    description: Kortex AI Workbench environment
+    description: Autonomous model gateway and hybrid memory platform for DGX Spark.
     labels:
+        - LLM
+        - RAG
+        - TypeDB
+        - LangGraph
+        - DGX-Spark
         - cuda13.1
         - pytorch2.11
     createdOn: "2026-07-22T21:26:22Z"
@@ -83,7 +88,7 @@ execution:
     resources:
         gpu:
             requested: 1
-        sharedMemoryMB: 1024
+        sharedMemoryMB: 16384
     secrets: []
     mounts:
         - type: project

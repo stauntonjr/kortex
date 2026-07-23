@@ -1,4 +1,9 @@
-jupyterlab>3.0
-fastapi
+# Runtime dependencies mirrored from pyproject.toml for compose-based installs.
+fastapi>=0.111
+httpx>=0.27
+langgraph>=0.2
+qdrant-client>=1.9
+redis>=5.0
 typedb-driver>=3.0
-uvicorn
+uvicorn[standard]>=0.30
+jupyterlab>3.0
