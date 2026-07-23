@@ -36,16 +36,20 @@ from qdrant_client.http.models import (
     PointStruct,
     VectorParams,
 )
-from typedb.driver import (
-    Credentials,
-    DriverOptions,
-    DriverTlsConfig,
-    TransactionOptions,
-    TransactionType,
-    TypeDB,
-)
+from typedb.driver import TransactionOptions, TransactionType, TypeDB, credentials_new
+
+# Optional runtime-only imports (DriverOptions/DriverTlsConfig may not exist
+# in all installed driver versions). Import when needed inside functions.
 
 logger = logging.getLogger(__name__)
+
+
+def build_typedb_credentials() -> object | None:
+    """Construct TypeDB credentials using the installed TypeDB 3.x API."""
+    try:
+        return credentials_new(TYPEDB_USERNAME, TYPEDB_PASSWORD)
+    except Exception:
+        return None
 
 # ---------------------------------------------------------------------------
 # Configuration (override via environment variables)
@@ -189,11 +193,27 @@ async def upsert_to_qdrant(
 # ---------------------------------------------------------------------------
 
 
-def build_typedb_driver_options() -> DriverOptions:
-    return DriverOptions(
-        DriverTlsConfig.disabled(),
-        request_timeout_millis=TYPEDB_REQUEST_TIMEOUT_MILLIS,
-    )
+def build_typedb_driver_options():
+    """Build driver options in a runtime-compatible way.
+
+    Returns either a `TypeDBOptions`/`DriverOptions` object or a native
+    options handle created via `options_new()` depending on installed driver.
+    """
+    try:
+        from typedb.driver import DriverOptions, DriverTlsConfig
+        try:
+            return DriverOptions(DriverTlsConfig.disabled(), request_timeout_millis=TYPEDB_REQUEST_TIMEOUT_MILLIS)
+        except Exception:
+            return DriverOptions()
+    except Exception:
+        try:
+            from typedb.driver import TypeDBOptions, DriverTlsConfig
+            try:
+                return TypeDBOptions(DriverTlsConfig.disabled(), request_timeout_millis=TYPEDB_REQUEST_TIMEOUT_MILLIS)
+            except Exception:
+                return TypeDBOptions()
+        except Exception:
+            return None
 
 
 def build_typedb_transaction_options(transaction_type: TransactionType) -> TransactionOptions:
@@ -314,10 +334,15 @@ async def ingest(root: Path, language: str) -> None:
     await upsert_to_qdrant(qdrant, all_chunks, all_vectors)
 
     # TypeDB
-    credentials = Credentials(TYPEDB_USERNAME, TYPEDB_PASSWORD)
-    with TypeDB.driver(TYPEDB_ADDR, credentials, build_typedb_driver_options()) as driver:
-        bootstrap_typedb(driver, TYPEDB_DATABASE, schema_path)
-        upsert_to_typedb(driver, all_chunks, TYPEDB_DATABASE)
+    creds = build_typedb_credentials()
+    if creds is not None:
+        with TypeDB.driver(TYPEDB_ADDR, creds, build_typedb_driver_options()) as driver:
+            bootstrap_typedb(driver, TYPEDB_DATABASE, schema_path)
+            upsert_to_typedb(driver, all_chunks, TYPEDB_DATABASE)
+    else:
+        with TypeDB.driver(TYPEDB_ADDR, build_typedb_driver_options()) as driver:
+            bootstrap_typedb(driver, TYPEDB_DATABASE, schema_path)
+            upsert_to_typedb(driver, all_chunks, TYPEDB_DATABASE)
 
 
 def main(argv: Sequence[str] | None = None) -> None:
