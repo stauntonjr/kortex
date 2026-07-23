@@ -31,10 +31,10 @@ from kortex.contracts import RetrievalRequest
 from memory.retrieval import (
     DEFAULT_TOKEN_BUDGET,
     MAX_TRAVERSAL_DEPTH,
-    build_default_memory_retriever,
     build_memory_context,
     retrieval_result_to_memory_nodes,
 )
+from memory.service import build_memory_service
 from agent.state import COMPLEXITY_MAP, WorkflowState
 
 logger = logging.getLogger(__name__)
@@ -221,4 +221,4 @@ def build_graph(*, memory_retriever=None) -> StateGraph:
 # ---------------------------------------------------------------------------
 
 #: Ready-to-use compiled LangGraph for the Kortex agent workflow.
-kortex_graph = build_graph(memory_retriever=build_default_memory_retriever())
+kortex_graph = build_graph(memory_retriever=build_memory_service()["retrieve"])

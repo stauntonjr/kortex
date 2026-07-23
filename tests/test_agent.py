@@ -30,6 +30,7 @@ from agent.graph import (
     intake_node,
     retrieve_node,
 )
+import agent.graph as agent_graph
 from agent.state import COMPLEXITY_MAP, WorkflowState
 from kortex.contracts import RetrievalResult, RetrievedNode
 
@@ -191,6 +192,17 @@ class TestComplexityMap:
 
 
 class TestBuildGraph:
+    def test_module_graph_uses_memory_service_retriever(self, monkeypatch):
+        calls = {}
+
+        async def fake_retriever(request):
+            calls["query"] = request.query
+            return RetrievalResult(nodes=(), explanation="ok")
+
+        monkeypatch.setattr(agent_graph, "kortex_graph", build_graph(memory_retriever=fake_retriever))
+
+        assert agent_graph.kortex_graph is not None
+
     def test_graph_compiles_without_error(self):
         graph = build_graph()
         assert graph is not None
