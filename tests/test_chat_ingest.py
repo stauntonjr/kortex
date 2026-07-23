@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,8 @@ from memory.chat_ingest import (
     build_qdrant_points,
     classify_directive,
     build_default_qdrant_upsert,
+    ingest_writeback_log,
+    iter_writeback_events,
     persist_batch_to_qdrant,
     persist_batch_to_typedb,
     persist_writeback_event,
@@ -23,6 +26,10 @@ from memory.chat_ingest import (
 FIXTURE = Path(__file__).resolve().parent / "fixtures" / "chat_writeback_event.json"
 
 
+def fixture_jsonl_line() -> str:
+    return json.dumps(json.loads(FIXTURE.read_text()), separators=(",", ":"))
+
+
 class TestFixtureLoading:
     def test_load_writeback_event(self):
         event = load_writeback_event(FIXTURE)
@@ -31,6 +38,24 @@ class TestFixtureLoading:
         assert event.gateway_result.resolved_model == "qwen-coder"
         assert event.user_turn.role == "user"
         assert event.assistant_turn.turn_id == "assistant-turn-8"
+
+    def test_iter_writeback_events_reads_jsonl(self, tmp_path):
+        line = fixture_jsonl_line()
+        path = tmp_path / "writeback.jsonl"
+        path.write_text(f"{line}\n{line}\n")
+
+        events = iter_writeback_events(path)
+
+        assert len(events) == 2
+        assert events[0].session_id == "session-demo-1"
+        assert events[1].assistant_turn.turn_id == "assistant-turn-8"
+
+    def test_iter_writeback_events_reports_invalid_line(self, tmp_path):
+        path = tmp_path / "broken.jsonl"
+        path.write_text(f"{fixture_jsonl_line()}\nnot-json\n")
+
+        with pytest.raises(ValueError, match="line 2"):
+            iter_writeback_events(path)
 
 
 class TestExtraction:
@@ -251,3 +276,22 @@ class TestIngestionBatch:
         assert calls["get_collections"] is True
         assert calls["create_collection"][0] == "kortex_chat"
         assert calls["upsert"][0] == "kortex_chat"
+
+    @pytest.mark.asyncio
+    async def test_ingest_writeback_log_replays_each_event(self, tmp_path, monkeypatch):
+        line = fixture_jsonl_line()
+        path = tmp_path / "writeback.jsonl"
+        path.write_text(f"{line}\n{line}\n")
+        seen = []
+
+        async def fake_persist(event, **kwargs):
+            del kwargs
+            seen.append(event.session_id)
+            return build_ingestion_batch(event)
+
+        monkeypatch.setattr("memory.chat_ingest.persist_writeback_event", fake_persist)
+
+        count = await ingest_writeback_log(path)
+
+        assert count == 2
+        assert seen == ["session-demo-1", "session-demo-1"]

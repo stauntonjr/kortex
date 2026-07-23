@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import uuid
+import argparse
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
@@ -33,6 +35,8 @@ from memory.ingest import (
     TYPEDB_DATABASE,
     upsert_chat_session_to_typedb,
 )
+
+logger = logging.getLogger(__name__)
 
 _FILE_REFERENCE_RE = re.compile(r"(?:[\w.-]+/)+[\w.-]+\.[A-Za-z0-9_]+")
 _DIRECTIVE_PREFIXES = (
@@ -98,7 +102,10 @@ def _parse_timestamp(value: str | None) -> datetime | None:
 
 def load_writeback_event(path: str | Path) -> TranscriptWritebackEvent:
     payload = json.loads(Path(path).read_text())
+    return load_writeback_event_payload(payload)
 
+
+def load_writeback_event_payload(payload: dict[str, Any]) -> TranscriptWritebackEvent:
     def build_turn(raw: dict[str, Any]) -> TranscriptTurn:
         return TranscriptTurn(
             role=raw["role"],
@@ -129,6 +136,19 @@ def load_writeback_event(path: str | Path) -> TranscriptWritebackEvent:
         tool_calls=tuple(payload.get("tool_calls", [])),
         metadata=payload.get("metadata", {}),
     )
+
+
+def iter_writeback_events(path: str | Path) -> Sequence[TranscriptWritebackEvent]:
+    events: list[TranscriptWritebackEvent] = []
+    for line_number, line in enumerate(Path(path).read_text().splitlines(), start=1):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            events.append(load_writeback_event_payload(json.loads(stripped)))
+        except Exception as exc:
+            raise ValueError(f"failed to parse writeback event at line {line_number}") from exc
+    return tuple(events)
 
 
 def extract_artifact_paths(text: str) -> tuple[str, ...]:
@@ -368,3 +388,36 @@ async def persist_writeback_event(
             build_default_qdrant_upsert(),
         )
     return batch
+
+
+async def ingest_writeback_log(path: str | Path) -> int:
+    count = 0
+    for event in iter_writeback_events(path):
+        await persist_writeback_event(event)
+        count += 1
+    logger.info("Ingested %d transcript writeback events from %s.", count, path)
+    return count
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s — %(message)s")
+    parser = argparse.ArgumentParser(description="Ingest transcript writeback events into Kortex memory.")
+    parser.add_argument("--path", required=True, help="Path to a writeback JSON or JSONL file")
+    args = parser.parse_args(argv)
+
+    path = Path(args.path)
+    if path.suffix == ".json":
+        event = load_writeback_event(path)
+        count = 1
+        import asyncio
+
+        asyncio.run(persist_writeback_event(event))
+    else:
+        import asyncio
+
+        count = asyncio.run(ingest_writeback_log(path))
+    logger.info("Completed transcript ingest for %d event(s).", count)
+
+
+if __name__ == "__main__":
+    main()
