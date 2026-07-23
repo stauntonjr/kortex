@@ -3,7 +3,13 @@ from __future__ import annotations
 import os
 
 import pytest
-from typedb.driver import Credentials, DriverOptions, DriverTlsConfig, TypeDB
+
+typedb_driver = pytest.importorskip("typedb.driver")
+
+Credentials = typedb_driver.Credentials
+DriverOptions = typedb_driver.DriverOptions
+DriverTlsConfig = typedb_driver.DriverTlsConfig
+TypeDB = typedb_driver.TypeDB
 
 
 def test_typedb_driver_connection_smoke() -> None:

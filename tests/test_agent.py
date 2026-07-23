@@ -15,6 +15,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+pytest.importorskip("httpx")
+pytest.importorskip("langgraph")
+pytest.importorskip("pytest_asyncio")
+
 from agent.graph import (
     _classify,
     _build_messages_with_context,

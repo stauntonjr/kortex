@@ -14,17 +14,22 @@ from __future__ import annotations
 
 import json
 import subprocess
+from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import httpx
 import pytest
-from fastapi.testclient import TestClient
+
+httpx = pytest.importorskip("httpx")
+pytest_asyncio = pytest.importorskip("pytest_asyncio")
+pytest.importorskip("respx")
+pytest.importorskip("typedb.driver")
 
 # Import the gateway module under test
 from gateway.gateway import (
     MODEL_REGISTRY,
     _is_healthy,
     _launch_process,
+    _request_with_retries,
     _stop_process,
     app,
     ensure_model_online,
@@ -56,11 +61,24 @@ def reset_registry():
         cfg["healthy"] = False
 
 
-@pytest.fixture
-def test_client():
-    with patch("gateway.gateway._open_typedb_driver", return_value=MagicMock()):
-        with TestClient(app, raise_server_exceptions=False) as client:
+@pytest_asyncio.fixture
+async def async_client():
+    original_lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def noop_lifespan(_app):
+        yield
+
+    app.router.lifespan_context = noop_lifespan
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+        ) as client:
             yield client
+    finally:
+        app.router.lifespan_context = original_lifespan
 
 
 # ---------------------------------------------------------------------------
@@ -229,26 +247,81 @@ class TestEnsureModelOnline:
 
 
 # ---------------------------------------------------------------------------
+# _request_with_retries
+# ---------------------------------------------------------------------------
+
+
+class TestRequestWithRetries:
+    @pytest.mark.asyncio
+    async def test_retries_backend_connect_errors(self):
+        fake_response = httpx.Response(200, json={"choices": [{"message": {"content": "hello"}}]})
+
+        with (
+            patch(
+                "gateway.gateway.httpx.AsyncClient.request",
+                new_callable=AsyncMock,
+                side_effect=[httpx.ConnectError("refused"), fake_response],
+            ) as mock_req,
+            patch("gateway.gateway.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            resp = await _request_with_retries(
+                method="POST",
+                url="http://127.0.0.1:8002/v1/chat/completions",
+                headers={"content-type": "application/json"},
+                content=b'{"model":"qwen-coder"}',
+            )
+
+        assert resp.status_code == 200
+        assert mock_req.await_count == 2
+        mock_sleep.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_retries_backend_timeouts(self):
+        fake_response = httpx.Response(200, json={"choices": [{"message": {"content": "hello"}}]})
+
+        with (
+            patch(
+                "gateway.gateway.httpx.AsyncClient.request",
+                new_callable=AsyncMock,
+                side_effect=[httpx.TimeoutException("timed out"), fake_response],
+            ) as mock_req,
+            patch("gateway.gateway.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
+        ):
+            resp = await _request_with_retries(
+                method="POST",
+                url="http://127.0.0.1:8002/v1/chat/completions",
+                headers={"content-type": "application/json"},
+                content=b'{"model":"qwen-coder"}',
+            )
+
+        assert resp.status_code == 200
+        assert mock_req.await_count == 2
+        mock_sleep.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
 # HTTP endpoint tests
 # ---------------------------------------------------------------------------
 
 
 class TestGatewayEndpoints:
-    def test_health_returns_200(self, test_client):
-        resp = test_client.get("/health")
+    @pytest.mark.asyncio
+    async def test_health_returns_200(self, async_client):
+        resp = await async_client.get("/health")
         assert resp.status_code == 200
         data = resp.json()
         assert data["status"] == "ok"
         assert set(data["models"].keys()) == set(MODEL_REGISTRY.keys())
 
-    def test_ready_returns_200_when_typedb_and_model_are_available(self, test_client):
+    @pytest.mark.asyncio
+    async def test_ready_returns_200_when_typedb_and_model_are_available(self, async_client):
         MODEL_REGISTRY["qwen-coder"]["process"] = MagicMock()
 
         with (
             patch("gateway.gateway._typedb_ready", return_value=True),
             patch("gateway.gateway._is_healthy", new_callable=AsyncMock, return_value=True),
         ):
-            resp = test_client.get("/health/ready")
+            resp = await async_client.get("/health/ready")
 
         assert resp.status_code == 200
         data = resp.json()
@@ -256,27 +329,30 @@ class TestGatewayEndpoints:
         assert data["typedb"]["ready"] is True
         assert data["models"]["qwen-coder"] is True
 
-    def test_ready_returns_503_when_typedb_is_unavailable(self, test_client):
+    @pytest.mark.asyncio
+    async def test_ready_returns_503_when_typedb_is_unavailable(self, async_client):
         MODEL_REGISTRY["qwen-coder"]["process"] = MagicMock()
 
         with (
             patch("gateway.gateway._typedb_ready", return_value=False),
             patch("gateway.gateway._is_healthy", new_callable=AsyncMock, return_value=True),
         ):
-            resp = test_client.get("/health/ready")
+            resp = await async_client.get("/health/ready")
 
         assert resp.status_code == 503
         assert resp.json()["status"] == "not_ready"
 
-    def test_list_models_returns_all_entries(self, test_client):
-        resp = test_client.get("/v1/models")
+    @pytest.mark.asyncio
+    async def test_list_models_returns_all_entries(self, async_client):
+        resp = await async_client.get("/v1/models")
         assert resp.status_code == 200
         data = resp.json()
         assert data["object"] == "list"
         ids = {m["id"] for m in data["data"]}
         assert ids == set(MODEL_REGISTRY.keys())
 
-    def test_proxy_routes_to_correct_backend(self, test_client):
+    @pytest.mark.asyncio
+    async def test_proxy_routes_to_correct_backend(self, async_client):
         """A POST to /v1/chat/completions with model=qwen-coder reaches port 8002."""
         MODEL_REGISTRY["qwen-coder"]["process"] = MagicMock()
         MODEL_REGISTRY["qwen-coder"]["healthy"] = True
@@ -289,114 +365,71 @@ class TestGatewayEndpoints:
         with (
             patch("gateway.gateway.ensure_model_online", new_callable=AsyncMock),
             patch(
-                "gateway.gateway.httpx.AsyncClient.request",
+                "gateway.gateway._request_with_retries",
                 new_callable=AsyncMock,
                 return_value=fake_response,
-            ) as mock_req,
+            ) as mock_backend,
         ):
             body = json.dumps({"model": "qwen-coder", "messages": [{"role": "user", "content": "hi"}]})
-            resp = test_client.post(
+            resp = await async_client.post(
                 "/v1/chat/completions",
                 content=body,
                 headers={"content-type": "application/json"},
             )
             assert resp.status_code == 200
             # Verify the URL pointed to the qwen-coder backend port
-            call_url: str = mock_req.call_args.kwargs.get("url", mock_req.call_args.args[1] if mock_req.call_args.args else "")
+            call_url: str = mock_backend.call_args.kwargs.get("url", "")
             assert "8002" in str(call_url)
 
-    def test_proxy_retries_backend_connect_errors(self, test_client):
-        fake_response = httpx.Response(200, json={"choices": [{"message": {"content": "hello"}}]})
-
-        with (
-            patch("gateway.gateway.ensure_model_online", new_callable=AsyncMock),
-            patch(
-                "gateway.gateway.httpx.AsyncClient.request",
-                new_callable=AsyncMock,
-                side_effect=[httpx.ConnectError("refused"), fake_response],
-            ) as mock_req,
-            patch("gateway.gateway.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
-        ):
-            body = json.dumps({"model": "qwen-coder", "messages": [{"role": "user", "content": "hi"}]})
-            resp = test_client.post(
-                "/v1/chat/completions",
-                content=body,
-                headers={"content-type": "application/json"},
-            )
-
-        assert resp.status_code == 200
-        assert mock_req.await_count == 2
-        mock_sleep.assert_awaited_once()
-
-    def test_proxy_retries_backend_timeouts(self, test_client):
-        fake_response = httpx.Response(200, json={"choices": [{"message": {"content": "hello"}}]})
-
-        with (
-            patch("gateway.gateway.ensure_model_online", new_callable=AsyncMock),
-            patch(
-                "gateway.gateway.httpx.AsyncClient.request",
-                new_callable=AsyncMock,
-                side_effect=[httpx.TimeoutException("timed out"), fake_response],
-            ) as mock_req,
-            patch("gateway.gateway.asyncio.sleep", new_callable=AsyncMock) as mock_sleep,
-        ):
-            body = json.dumps({"model": "qwen-coder", "messages": [{"role": "user", "content": "hi"}]})
-            resp = test_client.post(
-                "/v1/chat/completions",
-                content=body,
-                headers={"content-type": "application/json"},
-            )
-
-        assert resp.status_code == 200
-        assert mock_req.await_count == 2
-        mock_sleep.assert_awaited_once()
-
-    def test_proxy_falls_back_to_qwen_coder_for_unknown_model(self, test_client):
+    @pytest.mark.asyncio
+    async def test_proxy_falls_back_to_qwen_coder_for_unknown_model(self, async_client):
         fake_response = httpx.Response(200, json={"ok": True})
 
         with (
             patch("gateway.gateway.ensure_model_online", new_callable=AsyncMock),
             patch(
-                "gateway.gateway.httpx.AsyncClient.request",
+                "gateway.gateway._request_with_retries",
                 new_callable=AsyncMock,
                 return_value=fake_response,
-            ) as mock_req,
+            ) as mock_backend,
         ):
             body = json.dumps({"model": "unknown-model-xyz", "messages": []})
-            resp = test_client.post(
+            resp = await async_client.post(
                 "/v1/chat/completions",
                 content=body,
                 headers={"content-type": "application/json"},
             )
             assert resp.status_code == 200
-            call_url = str(mock_req.call_args.kwargs.get("url", ""))
+            call_url = str(mock_backend.call_args.kwargs.get("url", ""))
             assert "8002" in call_url  # qwen-coder port
 
-    def test_proxy_returns_503_when_model_fails_to_start(self, test_client):
+    @pytest.mark.asyncio
+    async def test_proxy_returns_503_when_model_fails_to_start(self, async_client):
         with patch(
             "gateway.gateway.ensure_model_online",
             new_callable=AsyncMock,
             side_effect=RuntimeError("failed to start"),
         ):
             body = json.dumps({"model": "qwen-coder", "messages": []})
-            resp = test_client.post(
+            resp = await async_client.post(
                 "/v1/chat/completions",
                 content=body,
                 headers={"content-type": "application/json"},
             )
             assert resp.status_code == 503
 
-    def test_proxy_returns_503_on_backend_connect_error(self, test_client):
+    @pytest.mark.asyncio
+    async def test_proxy_returns_503_on_backend_connect_error(self, async_client):
         with (
             patch("gateway.gateway.ensure_model_online", new_callable=AsyncMock),
             patch(
-                "gateway.gateway.httpx.AsyncClient.request",
+                "gateway.gateway._request_with_retries",
                 new_callable=AsyncMock,
                 side_effect=httpx.ConnectError("refused"),
             ),
         ):
             body = json.dumps({"model": "qwen-coder", "messages": []})
-            resp = test_client.post(
+            resp = await async_client.post(
                 "/v1/chat/completions",
                 content=body,
                 headers={"content-type": "application/json"},
