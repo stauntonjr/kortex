@@ -27,7 +27,12 @@ import logging
 import httpx
 from langgraph.graph import END, StateGraph
 
-from memory.retrieval import DEFAULT_TOKEN_BUDGET, MAX_TRAVERSAL_DEPTH, build_memory_context
+from memory.retrieval import (
+    DEFAULT_TOKEN_BUDGET,
+    MAX_TRAVERSAL_DEPTH,
+    build_memory_context,
+    retrieval_result_to_memory_nodes,
+)
 from agent.state import COMPLEXITY_MAP, WorkflowState
 
 logger = logging.getLogger(__name__)
@@ -35,6 +40,8 @@ logger = logging.getLogger(__name__)
 def _build_messages_with_context(state: WorkflowState) -> list[dict[str, str]]:
     messages = list(state.get("messages", []))
     memory_nodes = state.get("memory_nodes") or []
+    if not memory_nodes:
+        memory_nodes = retrieval_result_to_memory_nodes(state.get("retrieval_result"))
     if not memory_nodes:
         return messages
 

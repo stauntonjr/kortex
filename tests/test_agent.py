@@ -28,6 +28,7 @@ from agent.graph import (
     intake_node,
 )
 from agent.state import COMPLEXITY_MAP, WorkflowState
+from kortex.contracts import RetrievalResult, RetrievedNode
 
 
 # ---------------------------------------------------------------------------
@@ -249,3 +250,27 @@ class TestMemoryContext:
         state["memory_nodes"] = [{"name": "deep", "content": "ignored", "depth": 4, "score": 1.0}]
 
         assert _build_messages_with_context(state) == state["messages"]
+
+    def test_retrieval_result_can_supply_memory_context(self):
+        state = _make_state("fix typo")
+        state["retrieval_result"] = RetrievalResult(
+            nodes=(
+                RetrievedNode(
+                    node_id="turn-1",
+                    kind="chat",
+                    content="Remember the gateway writeback constraint.",
+                    score=0.9,
+                    depth=0,
+                    name="turn-1",
+                    source_uri="chat://session-1#1",
+                ),
+            ),
+            explanation="Qdrant seed plus graph expansion.",
+        )
+        state["memory_token_budget"] = 20
+
+        messages = _build_messages_with_context(state)
+
+        assert messages[0]["role"] == "system"
+        assert "turn-1" in messages[0]["content"]
+        assert "gateway writeback constraint" in messages[0]["content"]

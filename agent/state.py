@@ -27,6 +27,8 @@ from __future__ import annotations
 from typing import Annotated, Any
 from typing_extensions import NotRequired, TypedDict
 
+from kortex.contracts import RetrievalResult
+
 # ---------------------------------------------------------------------------
 # Complexity → gateway model mapping
 # ---------------------------------------------------------------------------
@@ -78,3 +80,6 @@ class WorkflowState(TypedDict):
 
     #: Optional token-budget override for memory_nodes.
     memory_token_budget: NotRequired[int]
+
+    #: Optional typed retrieval result for memory context assembly.
+    retrieval_result: NotRequired[RetrievalResult]

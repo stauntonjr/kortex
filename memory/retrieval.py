@@ -95,6 +95,12 @@ def build_memory_context(
     return "\n".join(lines)
 
 
+def retrieval_result_to_memory_nodes(result: RetrievalResult | None) -> list[dict[str, Any]]:
+    if result is None:
+        return []
+    return [asdict(node) for node in result.nodes]
+
+
 async def embed_query_text(query: str) -> list[float]:
     async with httpx.AsyncClient(timeout=120) as client:
         response = await client.post(
