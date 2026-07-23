@@ -23,6 +23,7 @@ Environment variables (all optional, sensible defaults shown):
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import subprocess
@@ -31,11 +32,16 @@ import atexit
 import signal
 import contextlib
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 from typing import Any
+from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse, StreamingResponse
+
+from kortex.contracts import GatewayResult, TranscriptTurn, TranscriptWritebackEvent
+from memory.writeback import enqueue_writeback_event, start_writeback_worker, stop_writeback_worker
 
 # TypeDB v3 driver imports (import only stable symbols here)
 from typedb.driver import TypeDB, credentials_new
@@ -399,6 +405,154 @@ def _typedb_ready() -> bool:
     return _typedb_driver is not None
 
 
+def _coerce_usage(raw_usage: Any) -> dict[str, int | float | str]:
+    if not isinstance(raw_usage, dict):
+        return {}
+    usage: dict[str, int | float | str] = {}
+    for key, value in raw_usage.items():
+        if isinstance(value, (int, float, str)):
+            usage[str(key)] = value
+    return usage
+
+
+def _extract_session_id(payload: dict[str, Any], headers: Any) -> str:
+    header_value = None
+    if headers is not None:
+        header_value = headers.get("x-kortex-session-id") or headers.get("x-session-id")
+
+    candidates = [
+        header_value,
+        payload.get("session_id"),
+        payload.get("conversation_id"),
+        payload.get("thread_id"),
+    ]
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        candidates.extend(
+            [
+                metadata.get("session_id"),
+                metadata.get("conversation_id"),
+                metadata.get("thread_id"),
+            ]
+        )
+
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.strip():
+            return candidate.strip()
+    return str(uuid4())
+
+
+def _extract_title(messages: list[dict[str, Any]]) -> str | None:
+    for message in messages:
+        if message.get("role") == "user":
+            content = str(message.get("content", "")).strip()
+            if content:
+                return content[:80]
+    return None
+
+
+def _build_writeback_event(
+    *,
+    path: str,
+    method: str,
+    request_body: bytes,
+    request_headers: Any,
+    backend_resp: httpx.Response,
+    model_key: str,
+    started_at: datetime,
+    completed_at: datetime,
+) -> TranscriptWritebackEvent | None:
+    if method.upper() != "POST" or path != "chat/completions":
+        return None
+
+    try:
+        payload = json.loads(request_body.decode("utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+
+    messages = payload.get("messages")
+    if not isinstance(messages, list) or not messages:
+        return None
+
+    normalized_messages = [message for message in messages if isinstance(message, dict)]
+    if not normalized_messages:
+        return None
+
+    last_user = next(
+        (message for message in reversed(normalized_messages) if message.get("role") == "user"),
+        None,
+    )
+    if last_user is None:
+        return None
+
+    try:
+        response_payload = backend_resp.json()
+    except Exception:
+        return None
+    if not isinstance(response_payload, dict):
+        return None
+
+    choices = response_payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return None
+    first_choice = choices[0] if isinstance(choices[0], dict) else None
+    if not first_choice:
+        return None
+    assistant_message = first_choice.get("message")
+    if not isinstance(assistant_message, dict):
+        return None
+
+    assistant_content = assistant_message.get("content")
+    if not isinstance(assistant_content, str) or not assistant_content.strip():
+        return None
+
+    session_id = _extract_session_id(payload, request_headers)
+    request_id = backend_resp.headers.get("x-request-id") or response_payload.get("id") or str(uuid4())
+
+    return TranscriptWritebackEvent(
+        session_id=session_id,
+        source="gateway",
+        user_turn=TranscriptTurn(
+            role="user",
+            content=str(last_user.get("content", "")),
+            turn_id=last_user.get("turn_id"),
+        ),
+        assistant_turn=TranscriptTurn(
+            role=str(assistant_message.get("role", "assistant")),
+            content=assistant_content,
+            turn_id=assistant_message.get("turn_id"),
+            timestamp=completed_at,
+            metadata={"finish_reason": first_choice.get("finish_reason")},
+        ),
+        gateway_result=GatewayResult(
+            request_id=request_id,
+            resolved_model=model_key,
+            response_text=assistant_content,
+            started_at=started_at,
+            completed_at=completed_at,
+            usage=_coerce_usage(response_payload.get("usage")),
+        ),
+        title=_extract_title(normalized_messages),
+        source_uri=f"gateway://{session_id}",
+        previous_turn_count=max(0, len(normalized_messages) - 1),
+        metadata={
+            "path": path,
+            "backend_url": _backend_url(model_key),
+        },
+    )
+
+
+def _schedule_writeback_event(event: TranscriptWritebackEvent | None) -> None:
+    if event is None:
+        return
+    try:
+        asyncio.create_task(enqueue_writeback_event(event))
+    except RuntimeError:
+        logger.exception("Failed to schedule transcript writeback event.")
+
+
 async def _poll_models():
     """Periodically probe all running model processes and update health flags."""
     while True:
@@ -461,6 +615,7 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Gateway starting up...")
     _open_typedb_driver()
+    await start_writeback_worker()
 
     # Start a background task to poll for model health
     poll_task = asyncio.create_task(_poll_models())
@@ -468,6 +623,9 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Gateway shutting down...")
     poll_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await poll_task
+    await stop_writeback_worker()
     _close_typedb_driver()
     _stop_all_models()
 
@@ -590,6 +748,7 @@ async def proxy(path: str, request: Request) -> Response:
     if it is not yet running.
     """
     model_key = await _extract_model_key(request)
+    backend_started_at = datetime.now(timezone.utc)
 
     # Bring the model online (may evict conflicting exclusive models)
     try:
@@ -624,6 +783,8 @@ async def proxy(path: str, request: Request) -> Response:
             detail=f"Backend for model '{model_key}' is not reachable: {exc}",
         ) from exc
 
+    backend_completed_at = datetime.now(timezone.utc)
+
     # Detect streaming responses and forward them
     content_type = backend_resp.headers.get("content-type", "")
     if "text/event-stream" in content_type:
@@ -637,6 +798,19 @@ async def proxy(path: str, request: Request) -> Response:
             headers=dict(backend_resp.headers),
             media_type=content_type,
         )
+
+    _schedule_writeback_event(
+        _build_writeback_event(
+            path=path,
+            method=request.method,
+            request_body=body,
+            request_headers=request.headers,
+            backend_resp=backend_resp,
+            model_key=model_key,
+            started_at=backend_started_at,
+            completed_at=backend_completed_at,
+        )
+    )
 
     return Response(
         content=backend_resp.content,

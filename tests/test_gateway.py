@@ -24,6 +24,8 @@ pytest_asyncio = pytest.importorskip("pytest_asyncio")
 pytest.importorskip("respx")
 pytest.importorskip("typedb.driver")
 
+from memory import writeback
+
 # Import the gateway module under test
 from gateway.gateway import (
     MODEL_REGISTRY,
@@ -51,6 +53,13 @@ def reset_registry():
     for cfg in MODEL_REGISTRY.values():
         cfg["process"] = None
         cfg["healthy"] = False
+
+
+@pytest.fixture(autouse=True)
+def disable_writeback(monkeypatch):
+    monkeypatch.setattr(writeback, "WRITEBACK_ENABLED", False)
+    monkeypatch.setattr(writeback, "_writeback_queue", None)
+    monkeypatch.setattr(writeback, "_writeback_task", None)
     yield
     for cfg in MODEL_REGISTRY.values():
         proc = cfg.get("process")

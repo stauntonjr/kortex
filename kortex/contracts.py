@@ -84,3 +84,43 @@ class ReflectionJob:
     created_at: datetime
     payload: Mapping[str, Any] = field(default_factory=dict)
     priority: int = 0
+
+
+def _serialize_datetime(value: datetime | None) -> str | None:
+    return value.isoformat() if value else None
+
+
+def transcript_turn_to_dict(turn: TranscriptTurn) -> dict[str, Any]:
+    return {
+        "role": turn.role,
+        "content": turn.content,
+        "turn_id": turn.turn_id,
+        "timestamp": _serialize_datetime(turn.timestamp),
+        "metadata": dict(turn.metadata),
+    }
+
+
+def gateway_result_to_dict(result: GatewayResult) -> dict[str, Any]:
+    return {
+        "request_id": result.request_id,
+        "resolved_model": result.resolved_model,
+        "response_text": result.response_text,
+        "started_at": _serialize_datetime(result.started_at),
+        "completed_at": _serialize_datetime(result.completed_at),
+        "usage": dict(result.usage),
+    }
+
+
+def transcript_writeback_event_to_dict(event: TranscriptWritebackEvent) -> dict[str, Any]:
+    return {
+        "session_id": event.session_id,
+        "source": event.source,
+        "user_turn": transcript_turn_to_dict(event.user_turn),
+        "assistant_turn": transcript_turn_to_dict(event.assistant_turn),
+        "gateway_result": gateway_result_to_dict(event.gateway_result),
+        "title": event.title,
+        "source_uri": event.source_uri,
+        "previous_turn_count": event.previous_turn_count,
+        "tool_calls": list(event.tool_calls),
+        "metadata": dict(event.metadata),
+    }
