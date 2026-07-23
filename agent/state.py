@@ -24,10 +24,12 @@ memory_nodes
 
 from __future__ import annotations
 
-from typing import Annotated, Any
+from typing import Annotated, Any, Awaitable, Callable
 from typing_extensions import NotRequired, TypedDict
 
-from kortex.contracts import RetrievalResult
+from kortex.contracts import RetrievalRequest, RetrievalResult
+
+MemoryRetriever = Callable[[RetrievalRequest], Awaitable[RetrievalResult]]
 
 # ---------------------------------------------------------------------------
 # Complexity → gateway model mapping
@@ -83,3 +85,9 @@ class WorkflowState(TypedDict):
 
     #: Optional typed retrieval result for memory context assembly.
     retrieval_result: NotRequired[RetrievalResult]
+
+    #: Optional explicit retrieval request for the memory plane.
+    retrieval_request: NotRequired[RetrievalRequest]
+
+    #: Optional memory retrieval service injected by the orchestrator.
+    memory_retriever: NotRequired[MemoryRetriever]

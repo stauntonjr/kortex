@@ -27,6 +27,7 @@ import logging
 import httpx
 from langgraph.graph import END, StateGraph
 
+from kortex.contracts import RetrievalRequest
 from memory.retrieval import (
     DEFAULT_TOKEN_BUDGET,
     MAX_TRAVERSAL_DEPTH,
@@ -36,6 +37,22 @@ from memory.retrieval import (
 from agent.state import COMPLEXITY_MAP, WorkflowState
 
 logger = logging.getLogger(__name__)
+
+
+def _last_user_content(messages: list[dict[str, str]]) -> str:
+    last_user = next((m for m in reversed(messages) if m.get("role") == "user"), None)
+    return (last_user or {}).get("content", "")
+
+
+def _build_retrieval_request(state: WorkflowState) -> RetrievalRequest:
+    existing = state.get("retrieval_request")
+    if existing is not None:
+        return existing
+    return RetrievalRequest(
+        query=_last_user_content(list(state.get("messages", []))),
+        max_depth=state.get("memory_max_depth", MAX_TRAVERSAL_DEPTH),
+        token_budget=state.get("memory_token_budget", DEFAULT_TOKEN_BUDGET),
+    )
 
 def _build_messages_with_context(state: WorkflowState) -> list[dict[str, str]]:
     messages = list(state.get("messages", []))
@@ -110,11 +127,7 @@ def intake_node(state: WorkflowState) -> dict:
     ``model_key``.
     """
     messages = state.get("messages") or []
-    last_user = next(
-        (m for m in reversed(messages) if m.get("role") == "user"),
-        None,
-    )
-    content = (last_user or {}).get("content", "")
+    content = _last_user_content(messages)
     complexity = _classify(content)
     model_key = COMPLEXITY_MAP[complexity]
 
@@ -126,6 +139,19 @@ def intake_node(state: WorkflowState) -> dict:
     )
 
     return {"task_complexity": complexity, "model_key": model_key}
+
+
+async def retrieve_node(state: WorkflowState) -> dict:
+    retriever = state.get("memory_retriever")
+    if retriever is None:
+        return {}
+    request = _build_retrieval_request(state)
+    result = await retriever(request)
+    return {
+        "retrieval_request": request,
+        "retrieval_result": result,
+        "memory_nodes": retrieval_result_to_memory_nodes(result),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -168,10 +194,12 @@ def build_graph() -> StateGraph:
     graph: StateGraph = StateGraph(WorkflowState)
 
     graph.add_node("intake",  intake_node)
+    graph.add_node("retrieve", retrieve_node)
     graph.add_node("execute", execute_node)
 
     graph.set_entry_point("intake")
-    graph.add_edge("intake",  "execute")
+    graph.add_edge("intake",  "retrieve")
+    graph.add_edge("retrieve", "execute")
     graph.add_edge("execute", END)
 
     return graph.compile()

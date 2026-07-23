@@ -8,10 +8,13 @@ pytest.importorskip("httpx")
 
 from kortex.contracts import RetrievalRequest, RetrievedNode
 from memory.retrieval import (
+    build_neighbor_expansion_query,
+    build_seed_lookup_query,
     build_memory_context,
     merge_retrieval_nodes,
     qdrant_candidate_search,
     retrieve_memory,
+    typedb_expand_with_driver,
 )
 
 
@@ -76,6 +79,88 @@ class TestQdrantCandidateSearch:
 
         assert len(nodes) == 1
         assert nodes[0].score == 0.9
+
+
+class TestTypeDBExpansion:
+    def test_build_seed_lookup_query_uses_kind_specific_ids(self):
+        query = build_seed_lookup_query(
+            RetrievedNode(node_id="turn-1", kind="chat", content="", score=0.9)
+        )
+
+        assert "chat-turn" in query
+        assert 'has turn-id "turn-1"' in query
+
+    def test_build_neighbor_expansion_query_targets_mentions(self):
+        query = build_neighbor_expansion_query(
+            RetrievedNode(node_id="turn-1", kind="chat", content="", score=0.9)
+        )
+
+        assert "(source-turn: $seed, target: $neighbor) isa mention" in query
+
+    def test_build_neighbor_expansion_query_reverses_mentions_for_code_seed(self):
+        query = build_neighbor_expansion_query(
+            RetrievedNode(node_id="gateway/gateway.py", kind="code", content="", score=0.9)
+        )
+
+        assert "(source-turn: $neighbor, target: $seed) isa mention" in query
+
+    def test_typedb_expand_with_driver_hydrates_seed_and_neighbors(self):
+        seed = RetrievedNode(
+            node_id="turn-1",
+            kind="chat",
+            content="seed text",
+            score=0.9,
+            depth=0,
+            name="turn-1",
+        )
+
+        class FakeTx:
+            def __init__(self):
+                self.queries = []
+
+            def query(self, query_text):
+                self.queries.append(query_text)
+                if "fetch\n  $node:" in query_text:
+                    return [
+                        {
+                            "turn-id": "turn-1",
+                            "content-text": "hydrated seed text",
+                            "source-uri": "chat://session-1#1",
+                        }
+                    ]
+                return [
+                    {
+                        "entity-id": "gateway/gateway.py",
+                        "content-text": "gateway writeback implementation",
+                        "entity-name": "gateway.py",
+                        "entity-path": "gateway/gateway.py",
+                    }
+                ]
+
+        class FakeTxContext:
+            def __init__(self, tx):
+                self.tx = tx
+
+            def __enter__(self):
+                return self.tx
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+        class FakeDriver:
+            def __init__(self):
+                self.tx = FakeTx()
+
+            def transaction(self, database, transaction_type, options=None):
+                del database, transaction_type, options
+                return FakeTxContext(self.tx)
+
+        nodes = typedb_expand_with_driver(FakeDriver(), (seed,), max_depth=2)
+
+        assert [node.node_id for node in nodes] == ["turn-1", "gateway/gateway.py"]
+        assert nodes[0].content == "hydrated seed text"
+        assert nodes[1].kind == "code"
+        assert nodes[1].depth == 1
 
 
 class TestMergeRetrievalNodes:

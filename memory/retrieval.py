@@ -2,14 +2,24 @@ from __future__ import annotations
 
 import math
 import os
+from contextlib import contextmanager
 from dataclasses import asdict
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 import httpx
+from typedb.driver import TransactionType, TypeDB
 
 from kortex.contracts import RetrievalRequest, RetrievalResult, RetrievedNode
 from memory.chat_ingest import CHAT_EMBEDDING_MODEL, CHAT_QDRANT_COLLECTION
-from memory.ingest import EMBEDDING_URL, QDRANT_COLLECTION
+from memory.ingest import (
+    EMBEDDING_URL,
+    QDRANT_COLLECTION,
+    TYPEDB_ADDR,
+    TYPEDB_DATABASE,
+    build_typedb_credentials,
+    build_typedb_driver_options,
+    typedb_transaction,
+)
 
 MAX_TRAVERSAL_DEPTH = int(os.getenv("KORTEX_GRAPHRAG_MAX_DEPTH", "3"))
 DEFAULT_TOKEN_BUDGET = int(os.getenv("KORTEX_GRAPHRAG_TOKEN_BUDGET", "1200"))
@@ -24,6 +34,18 @@ _MODE_COLLECTIONS = {
     "code": QDRANT_COLLECTION,
     "chat": CHAT_QDRANT_COLLECTION,
     "artifact": ARTIFACT_QDRANT_COLLECTION,
+}
+
+_KIND_ENTITY_MAP = {
+    "chat": "chat-turn",
+    "code": "code-entity",
+    "artifact": "project-artifact",
+}
+
+_KIND_ID_ATTRIBUTE = {
+    "chat": "turn-id",
+    "code": "entity-id",
+    "artifact": "artifact-id",
 }
 
 
@@ -204,12 +226,168 @@ def _mapping_value(mapping: Any, key: str, default: Any = None) -> Any:
     return default
 
 
+@contextmanager
+def open_default_typedb_driver():
+    creds = build_typedb_credentials()
+    options = build_typedb_driver_options()
+    if creds is not None:
+        with TypeDB.driver(TYPEDB_ADDR, creds, options) as driver:
+            yield driver
+        return
+    with TypeDB.driver(TYPEDB_ADDR, options) as driver:
+        yield driver
+
+
+def _quote_string(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n")
+    return f'"{escaped}"'
+
+
+def build_seed_lookup_query(node: RetrievedNode) -> str:
+    entity = _KIND_ENTITY_MAP.get(node.kind)
+    attr = _KIND_ID_ATTRIBUTE.get(node.kind)
+    if entity is None or attr is None:
+        raise ValueError(f"unsupported retrieval node kind: {node.kind}")
+    return "\n".join(
+        [
+            "match",
+            f"  $node isa {entity}, has {attr} {_quote_string(node.node_id)};",
+            "fetch",
+            "  $node: content-text,",
+            "  $node: entity-name,",
+            "  $node: entity-path,",
+            "  $node: source-uri,",
+            "  $node: speaker-role,",
+            "  $node: artifact-name;",
+        ]
+    )
+
+
+def build_neighbor_expansion_query(node: RetrievedNode) -> str:
+    entity = _KIND_ENTITY_MAP.get(node.kind)
+    attr = _KIND_ID_ATTRIBUTE.get(node.kind)
+    if entity is None or attr is None:
+        raise ValueError(f"unsupported retrieval node kind: {node.kind}")
+    relation_line = "  (source-turn: $seed, target: $neighbor) isa mention;"
+    if node.kind in {"code", "artifact"}:
+        relation_line = "  (source-turn: $neighbor, target: $seed) isa mention;"
+    return "\n".join(
+        [
+            "match",
+            f"  $seed isa {entity}, has {attr} {_quote_string(node.node_id)};",
+            relation_line,
+            "fetch",
+            "  $neighbor: turn-id,",
+            "  $neighbor: entity-id,",
+            "  $neighbor: artifact-id,",
+            "  $neighbor: content-text,",
+            "  $neighbor: entity-name,",
+            "  $neighbor: entity-path,",
+            "  $neighbor: artifact-name,",
+            "  $neighbor: source-uri;",
+        ]
+    )
+
+
+def _infer_kind_from_payload(payload: Mapping[str, Any]) -> str | None:
+    if payload.get("turn-id"):
+        return "chat"
+    if payload.get("entity-id"):
+        return "code"
+    if payload.get("artifact-id"):
+        return "artifact"
+    return None
+
+
+def _node_from_typedb_payload(
+    payload: Mapping[str, Any],
+    *,
+    fallback: RetrievedNode | None,
+    score: float,
+    depth: int,
+) -> RetrievedNode | None:
+    kind = _infer_kind_from_payload(payload) or (fallback.kind if fallback else None)
+    if kind is None:
+        return None
+    node_id = str(
+        payload.get("turn-id")
+        or payload.get("entity-id")
+        or payload.get("artifact-id")
+        or (fallback.node_id if fallback else "")
+    )
+    if not node_id:
+        return None
+    content = str(payload.get("content-text") or (fallback.content if fallback else ""))
+    name = (
+        payload.get("entity-name")
+        or payload.get("artifact-name")
+        or payload.get("entity-path")
+        or payload.get("source-uri")
+        or (fallback.name if fallback else None)
+    )
+    source_uri = payload.get("source-uri") or payload.get("entity-path") or (fallback.source_uri if fallback else None)
+    return RetrievedNode(
+        node_id=node_id,
+        kind=kind,
+        content=content,
+        score=score,
+        depth=depth,
+        name=None if name is None else str(name),
+        source_uri=None if source_uri is None else str(source_uri),
+    )
+
+
+def _normalize_typedb_rows(result: Any) -> list[Mapping[str, Any]]:
+    rows = list(result)
+    normalized: list[Mapping[str, Any]] = []
+    for row in rows:
+        if isinstance(row, Mapping):
+            normalized.append(row)
+            continue
+        as_dict = getattr(row, "as_dict", None)
+        if callable(as_dict):
+            normalized.append(as_dict())
+            continue
+        getter = getattr(row, "get", None)
+        if callable(getter):
+            normalized.append({key: getter(key) for key in ("turn-id", "entity-id", "artifact-id", "content-text", "entity-name", "entity-path", "artifact-name", "source-uri")})
+    return normalized
+
+
+def typedb_expand_with_driver(
+    driver: Any,
+    seeds: Sequence[RetrievedNode],
+    max_depth: int,
+    *,
+    database: str = TYPEDB_DATABASE,
+) -> Sequence[RetrievedNode]:
+    if max_depth <= 0 or not seeds:
+        return ()
+
+    expanded: dict[str, RetrievedNode] = {}
+    with typedb_transaction(driver, database, TransactionType.READ) as tx:
+        for seed in seeds:
+            for row in _normalize_typedb_rows(tx.query(build_seed_lookup_query(seed))):
+                hydrated = _node_from_typedb_payload(row, fallback=seed, score=seed.score, depth=0)
+                if hydrated is not None:
+                    expanded[hydrated.node_id] = hydrated
+            if max_depth < 1:
+                continue
+            for row in _normalize_typedb_rows(tx.query(build_neighbor_expansion_query(seed))):
+                neighbor = _node_from_typedb_payload(row, fallback=None, score=max(seed.score * 0.85, 0.0), depth=1)
+                if neighbor is not None and neighbor.node_id != seed.node_id:
+                    expanded.setdefault(neighbor.node_id, neighbor)
+    return tuple(expanded.values())
+
+
 def default_typedb_expand(
     seeds: Sequence[RetrievedNode],
     max_depth: int,
 ) -> Sequence[RetrievedNode]:
-    del seeds, max_depth
-    return ()
+    if max_depth <= 0 or not seeds:
+        return ()
+    with open_default_typedb_driver() as driver:
+        return typedb_expand_with_driver(driver, seeds, max_depth)
 
 
 def merge_retrieval_nodes(

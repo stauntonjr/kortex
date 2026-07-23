@@ -21,11 +21,13 @@ pytest.importorskip("pytest_asyncio")
 
 from agent.graph import (
     _classify,
+    _build_retrieval_request,
     _build_messages_with_context,
     _COMPLEX_WORD_THRESHOLD,
     _SIMPLE_WORD_THRESHOLD,
     build_graph,
     intake_node,
+    retrieve_node,
 )
 from agent.state import COMPLEXITY_MAP, WorkflowState
 from kortex.contracts import RetrievalResult, RetrievedNode
@@ -196,6 +198,7 @@ class TestBuildGraph:
         graph = build_graph()
         node_names = set(graph.get_graph().nodes.keys())
         assert "intake" in node_names
+        assert "retrieve" in node_names
         assert "execute" in node_names
 
     @pytest.mark.asyncio
@@ -225,6 +228,53 @@ class TestBuildGraph:
         assert result["response"] == "done"
         assert result["model_key"] == "qwen-coder"
         assert result["task_complexity"] == "simple"
+
+
+class TestRetrieveNode:
+    def test_build_retrieval_request_defaults_from_state(self):
+        state = _make_state("remember gateway writeback")
+        state["memory_max_depth"] = 2
+        state["memory_token_budget"] = 42
+
+        request = _build_retrieval_request(state)
+
+        assert request.query == "remember gateway writeback"
+        assert request.max_depth == 2
+        assert request.token_budget == 42
+
+    @pytest.mark.asyncio
+    async def test_retrieve_node_noops_without_retriever(self):
+        state = _make_state("fix typo")
+
+        assert await retrieve_node(state) == {}
+
+    @pytest.mark.asyncio
+    async def test_retrieve_node_returns_typed_result_and_memory_nodes(self):
+        state = _make_state("gateway writeback")
+
+        async def fake_retriever(request):
+            assert request.query == "gateway writeback"
+            return RetrievalResult(
+                nodes=(
+                    RetrievedNode(
+                        node_id="turn-1",
+                        kind="chat",
+                        content="Remember the writeback constraint.",
+                        score=0.9,
+                        depth=0,
+                        name="turn-1",
+                    ),
+                ),
+                explanation="seed plus neighbor",
+            )
+
+        state["memory_retriever"] = fake_retriever
+
+        result = await retrieve_node(state)
+
+        assert result["retrieval_request"].query == "gateway writeback"
+        assert result["retrieval_result"].nodes[0].node_id == "turn-1"
+        assert result["memory_nodes"][0]["node_id"] == "turn-1"
 
 
 class TestMemoryContext:
