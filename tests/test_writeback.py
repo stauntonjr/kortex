@@ -133,3 +133,37 @@ class TestWritebackWorker:
         payload = json.loads(lines[0])
         assert payload["session_id"] == "session-1"
         assert payload["assistant_turn"]["content"] == "hi"
+
+    @pytest.mark.asyncio
+    async def test_writeback_worker_optionally_persists_event(self, tmp_path, monkeypatch):
+        path = tmp_path / "writeback.jsonl"
+        calls = []
+        monkeypatch.setattr(writeback, "WRITEBACK_ENABLED", True)
+        monkeypatch.setattr(writeback, "WRITEBACK_PERSIST_ENABLED", True)
+        monkeypatch.setattr(writeback, "_writeback_queue", None)
+        monkeypatch.setattr(writeback, "_writeback_task", None)
+
+        async def fake_persist(event):
+            calls.append(event.session_id)
+
+        monkeypatch.setattr(writeback, "persist_writeback_event", fake_persist)
+        await writeback.start_writeback_worker(path)
+        try:
+            event = TranscriptWritebackEvent(
+                session_id="session-2",
+                source="gateway",
+                user_turn=TranscriptTurn(role="user", content="hello"),
+                assistant_turn=TranscriptTurn(role="assistant", content="hi"),
+                gateway_result=GatewayResult(
+                    request_id="req-2",
+                    resolved_model="qwen-coder",
+                    response_text="hi",
+                ),
+            )
+            await writeback.enqueue_writeback_event(event)
+            assert writeback._writeback_queue is not None
+            await writeback._writeback_queue.join()
+        finally:
+            await writeback.stop_writeback_worker()
+
+        assert calls == ["session-2"]

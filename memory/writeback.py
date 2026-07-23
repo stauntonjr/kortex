@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 
 from kortex.contracts import TranscriptWritebackEvent, transcript_writeback_event_to_dict
+from memory.chat_ingest import persist_writeback_event
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +17,11 @@ WRITEBACK_ENABLED = os.getenv("KORTEX_WRITEBACK_ENABLED", "1").lower() not in {
     "no",
 }
 WRITEBACK_PATH = Path(os.getenv("KORTEX_WRITEBACK_PATH", "/tmp/kortex-writeback.jsonl"))
+WRITEBACK_PERSIST_ENABLED = os.getenv("KORTEX_WRITEBACK_PERSIST_ENABLED", "0").lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 _writeback_queue: asyncio.Queue[TranscriptWritebackEvent | None] | None = None
 _writeback_task: asyncio.Task[None] | None = None
@@ -37,6 +43,8 @@ async def _writeback_worker(path: Path) -> None:
             break
         try:
             _append_writeback_event(path, event)
+            if WRITEBACK_PERSIST_ENABLED:
+                await persist_writeback_event(event)
         except Exception:
             logger.exception("Failed to persist transcript writeback event.")
         finally:

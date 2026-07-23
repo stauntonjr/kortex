@@ -6,7 +6,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Awaitable, Callable, Sequence
 
 from qdrant_client.http.models import PointStruct
 
@@ -17,6 +17,7 @@ from memory.ingest import (
     ChatTurnRecord,
     DirectiveRecord,
     build_chat_memory_queries,
+    upsert_chat_session_to_typedb,
 )
 
 _FILE_REFERENCE_RE = re.compile(r"(?:[\w.-]+/)+[\w.-]+\.[A-Za-z0-9_]+")
@@ -51,6 +52,10 @@ class TranscriptIngestionBatch:
     artifacts: tuple[ArtifactRecord, ...]
     queries: tuple[str, ...]
     embedding_documents: tuple[ChatEmbeddingDocument, ...]
+
+
+EmbeddingFunction = Callable[[tuple[ChatEmbeddingDocument, ...]], Awaitable[list[list[float]]]]
+QdrantUpsertFunction = Callable[[list[PointStruct]], Awaitable[None]]
 
 
 def _stable_id(kind: str, value: str) -> str:
@@ -232,3 +237,51 @@ def build_qdrant_points(
         )
         for document, vector in zip(documents, vectors)
     ]
+
+
+async def embed_chat_turns(
+    documents: tuple[ChatEmbeddingDocument, ...],
+    embedder: EmbeddingFunction,
+) -> list[list[float]]:
+    if not documents:
+        return []
+    return await embedder(documents)
+
+
+def persist_batch_to_typedb(driver: Any, batch: TranscriptIngestionBatch, database: str) -> None:
+    upsert_chat_session_to_typedb(
+        driver,
+        batch.session,
+        batch.turns,
+        batch.directives,
+        batch.artifacts,
+        database,
+    )
+
+
+async def persist_batch_to_qdrant(
+    batch: TranscriptIngestionBatch,
+    embedder: EmbeddingFunction,
+    upsert_points: QdrantUpsertFunction,
+) -> Sequence[PointStruct]:
+    vectors = await embed_chat_turns(batch.embedding_documents, embedder)
+    points = build_qdrant_points(batch.embedding_documents, vectors)
+    if points:
+        await upsert_points(points)
+    return points
+
+
+async def persist_writeback_event(
+    event: TranscriptWritebackEvent,
+    *,
+    typedb_driver: Any | None = None,
+    typedb_database: str | None = None,
+    embedder: EmbeddingFunction | None = None,
+    qdrant_upsert: QdrantUpsertFunction | None = None,
+) -> TranscriptIngestionBatch:
+    batch = build_ingestion_batch(event)
+    if typedb_driver is not None and typedb_database:
+        persist_batch_to_typedb(typedb_driver, batch, typedb_database)
+    if embedder is not None and qdrant_upsert is not None:
+        await persist_batch_to_qdrant(batch, embedder, qdrant_upsert)
+    return batch
