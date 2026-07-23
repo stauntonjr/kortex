@@ -1,8 +1,8 @@
 specVersion: v2
 specMinorVersion: 2
 meta:
-    name: stauntonjr-kortex2
-    image: project-stauntonjr-kortex2
+    name: stauntonjr-kortex
+    image: project-stauntonjr-kortex
     description: Autonomous model gateway and hybrid memory platform for DGX Spark.
     labels:
         - LLM
