@@ -32,6 +32,7 @@ from gateway.gateway import (
     _is_healthy,
     _launch_process,
     _request_with_retries,
+    _build_streaming_completion_response,
     _stop_process,
     app,
     ensure_model_online,
@@ -352,6 +353,14 @@ class TestGatewayEndpoints:
         assert resp.json()["status"] == "not_ready"
 
     @pytest.mark.asyncio
+    async def test_ready_returns_503_when_no_models_are_healthy(self, async_client):
+        with patch("gateway.gateway._typedb_ready", return_value=True):
+            resp = await async_client.get("/health/ready")
+
+        assert resp.status_code == 503
+        assert resp.json()["status"] == "not_ready"
+
+    @pytest.mark.asyncio
     async def test_list_models_returns_all_entries(self, async_client):
         resp = await async_client.get("/v1/models")
         assert resp.status_code == 200
@@ -444,3 +453,70 @@ class TestGatewayEndpoints:
                 headers={"content-type": "application/json"},
             )
             assert resp.status_code == 503
+
+    @pytest.mark.asyncio
+    async def test_proxy_streams_and_schedules_writeback(self, async_client):
+        backend_resp = httpx.Response(
+            200,
+            headers={
+                "content-type": "text/event-stream",
+                "connection": "keep-alive",
+                "x-request-id": "req-stream-1",
+            },
+            content=(
+                b'data: {"id":"chatcmpl-stream","choices":[{"delta":{"role":"assistant","content":"Hel"}}]}\n\n'
+                b'data: {"id":"chatcmpl-stream","choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}]}\n\n'
+                b"data: [DONE]\n\n"
+            ),
+        )
+
+        scheduled = []
+
+        with (
+            patch("gateway.gateway.ensure_model_online", new_callable=AsyncMock),
+            patch(
+                "gateway.gateway._request_with_retries",
+                new_callable=AsyncMock,
+                return_value=backend_resp,
+            ),
+            patch("gateway.gateway._schedule_writeback_event", side_effect=scheduled.append),
+        ):
+            resp = await async_client.post(
+                "/v1/chat/completions",
+                content=json.dumps(
+                    {
+                        "model": "qwen-coder",
+                        "session_id": "session-stream-1",
+                        "messages": [{"role": "user", "content": "Say hello"}],
+                    }
+                ),
+                headers={"content-type": "application/json"},
+            )
+            body = await resp.aread()
+
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        assert "connection" not in resp.headers
+        assert b'"content":"Hel"' in body
+        assert b'"content":"lo"' in body
+        assert len(scheduled) == 1
+        assert scheduled[0] is not None
+        assert scheduled[0].assistant_turn.content == "Hello"
+
+
+class TestStreamingWritebackHelpers:
+    def test_build_streaming_completion_response_reconstructs_assistant_message(self):
+        response = _build_streaming_completion_response(
+            (
+                b'data: {"id":"chatcmpl-stream","model":"qwen-coder","choices":[{"delta":{"role":"assistant","content":"Hel"}}]}\n\n'
+                b'data: {"id":"chatcmpl-stream","choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}]}\n\n'
+                b"data: [DONE]\n\n"
+            ),
+            fallback_request_id="req-fallback",
+        )
+
+        assert response is not None
+        payload = response.json()
+        assert payload["id"] == "chatcmpl-stream"
+        assert payload["choices"][0]["message"]["content"] == "Hello"
+        assert payload["choices"][0]["finish_reason"] == "stop"

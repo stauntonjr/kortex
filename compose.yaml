@@ -8,8 +8,8 @@ services:
     ports:
       - "1729:1729"
     volumes:
-      - typedb-data:/opt/typedb-all-linux-x86_64/server/data
-      - ./typedb-config.yml:/opt/typedb-server-linux-arm64/server/config.yml:ro
+      - typedb-data:/var/lib/typedb/data
+      - ./typedb-config.yml:/server/config.yml:ro
     # healthcheck removed because the TypeDB image does not include `curl`.
     # Container logs show the server is running; skip image-level health probing.
 

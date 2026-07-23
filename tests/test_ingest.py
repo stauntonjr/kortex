@@ -21,6 +21,7 @@ import pytest
 pytest.importorskip("httpx")
 pytest.importorskip("qdrant_client")
 pytest.importorskip("typedb.driver")
+from qdrant_client.http.models import PointStruct
 
 from memory.ingest import (
     CHUNK_SIZE,
@@ -38,7 +39,9 @@ from memory.ingest import (
     build_typedb_transaction_options,
     discover_sources,
     extract_chunks,
+    upsert_chat_session_to_typedb,
     upsert_to_typedb,
+    upsert_to_qdrant,
 )
 from typedb.driver import TransactionType
 
@@ -275,6 +278,75 @@ class TestTypeDBOperations:
         assert 'has entity-path  "/src/mod.py"' in insert_query
         assert 'has language     "python"' in insert_query
         write_tx.commit.assert_called_once()
+
+    def test_chat_upsert_commits_session_graph_in_one_transaction(self):
+        session = ChatSessionRecord(
+            session_id="session-1",
+            title="Gateway follow-up",
+            source_uri="chat://session-1",
+        )
+        turns = [
+            ChatTurnRecord(
+                turn_id="turn-1",
+                session_id="session-1",
+                role="user",
+                content="Keep gateway healthchecks pointed at real endpoints.",
+                turn_index=1,
+                source_uri="chat://session-1#1",
+            )
+        ]
+        directives = [
+            DirectiveRecord(
+                directive_id="directive-1",
+                kind="constraint",
+                body="Healthchecks must probe real endpoints.",
+                source_turn_id="turn-1",
+                severity="warning",
+            )
+        ]
+
+        write_tx = MagicMock()
+        write_cm = MagicMock()
+        write_cm.__enter__.return_value = write_tx
+        write_cm.__exit__.return_value = False
+
+        driver = MagicMock()
+        driver.transaction.return_value = write_cm
+
+        upsert_chat_session_to_typedb(driver, session, turns, directives, (), "kortex")
+
+        driver.transaction.assert_called_once()
+        call = driver.transaction.call_args
+        assert call.args[:2] == ("kortex", TransactionType.WRITE)
+        assert call.kwargs["options"].transaction_timeout_millis == (
+            TYPEDB_TRANSACTION_TIMEOUT_MILLIS
+        )
+        assert write_tx.query.call_count == len(build_chat_memory_queries(session, turns, directives))
+        write_tx.commit.assert_called_once()
+
+
+class TestQdrantOperations:
+    @pytest.mark.asyncio
+    async def test_upsert_to_qdrant_stores_chunk_content_in_payload(self):
+        chunk = CodeChunk(
+            entity_id="entity-1",
+            kind="file",
+            name="mod.py#0",
+            path="/src/mod.py",
+            language="python",
+            content="print('hello')",
+        )
+
+        client = AsyncMock()
+        client.get_collections.return_value.collections = []
+
+        await upsert_to_qdrant(client, [chunk], [[0.1, 0.2]])
+
+        upsert_call = client.upsert.await_args
+        points = upsert_call.kwargs["points"]
+        assert len(points) == 1
+        assert isinstance(points[0], PointStruct)
+        assert points[0].payload["content"] == "print('hello')"
 
 
 class TestInsertBuilders:

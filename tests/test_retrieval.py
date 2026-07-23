@@ -83,6 +83,32 @@ class TestQdrantCandidateSearch:
         assert len(nodes) == 1
         assert nodes[0].score == 0.9
 
+    @pytest.mark.asyncio
+    async def test_code_candidates_keep_qdrant_content_without_typedb(self):
+        class FakeClient:
+            async def search(self, **kwargs):
+                del kwargs
+                return [
+                    SimpleNamespace(
+                        id="code-1",
+                        score=0.8,
+                        payload={
+                            "entity_id": "code-1",
+                            "content": "def gateway_ready(): pass",
+                            "path": "gateway/gateway.py",
+                        },
+                    )
+                ]
+
+        nodes = await qdrant_candidate_search(
+            FakeClient(),
+            RetrievalRequest(query="gateway ready", modes=("code",), max_nodes=4),
+            query_vector=[0.1, 0.2],
+        )
+
+        assert len(nodes) == 1
+        assert nodes[0].content == "def gateway_ready(): pass"
+
 
 class TestTypeDBExpansion:
     def test_build_seed_lookup_query_uses_kind_specific_ids(self):

@@ -304,10 +304,11 @@ async def _request_with_retries(
 
 
 _typedb_driver = None
+_typedb_mock_driver = False
 
 
 def _open_typedb_driver():
-    global _typedb_driver
+    global _typedb_driver, _typedb_mock_driver
     if _typedb_driver:
         return
 
@@ -373,12 +374,16 @@ def _open_typedb_driver():
                 class _MockDriver:
                     def __init__(self):
                         self.databases = _MockDatabases()
+                        self.is_mock = True
 
                     def close(self):
                         logger.info("MockDriver.close() called")
 
                 logger.warning("Using mock TypeDB driver (unauthenticated development fallback)")
                 _typedb_driver = _MockDriver()
+                _typedb_mock_driver = True
+        if _typedb_driver is not None and not getattr(_typedb_driver, "is_mock", False):
+            _typedb_mock_driver = False
         logger.info("Successfully connected to TypeDB.")
 
         # Ensure database exists
@@ -390,19 +395,95 @@ def _open_typedb_driver():
     except Exception as e:
         logger.error(f"Failed to connect to or set up TypeDB: {e}", exc_info=True)
         _typedb_driver = None
+        _typedb_mock_driver = False
 
 
 def _close_typedb_driver():
-    global _typedb_driver
+    global _typedb_driver, _typedb_mock_driver
     if _typedb_driver:
         _typedb_driver.close()
         _typedb_driver = None
+        _typedb_mock_driver = False
         logger.info("Closed TypeDB driver connection.")
 
 
 def _typedb_ready() -> bool:
-    # The readiness check is now simply whether the driver object exists.
-    return _typedb_driver is not None
+    return _typedb_driver is not None and not _typedb_mock_driver
+
+
+def _filter_response_headers(headers: httpx.Headers) -> dict[str, str]:
+    return {
+        key: value
+        for key, value in headers.items()
+        if key.lower() not in _HOP_BY_HOP
+    }
+
+
+def _build_streaming_completion_response(
+    stream_body: bytes,
+    *,
+    fallback_request_id: str,
+) -> httpx.Response | None:
+    events: list[dict[str, Any]] = []
+    for raw_line in stream_body.decode("utf-8", errors="ignore").splitlines():
+        line = raw_line.strip()
+        if not line.startswith("data:"):
+            continue
+        payload_text = line[len("data:") :].strip()
+        if not payload_text or payload_text == "[DONE]":
+            continue
+        try:
+            payload = json.loads(payload_text)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            events.append(payload)
+
+    if not events:
+        return None
+
+    content_parts: list[str] = []
+    finish_reason = None
+    request_id = fallback_request_id
+    model_name = None
+
+    for event in events:
+        request_id = str(event.get("id") or request_id)
+        model_name = event.get("model") or model_name
+        choices = event.get("choices")
+        if not isinstance(choices, list):
+            continue
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            delta = choice.get("delta")
+            if isinstance(delta, dict):
+                piece = delta.get("content")
+                if isinstance(piece, str):
+                    content_parts.append(piece)
+            if choice.get("finish_reason") is not None:
+                finish_reason = choice.get("finish_reason")
+
+    assistant_content = "".join(content_parts).strip()
+    if not assistant_content:
+        return None
+
+    return httpx.Response(
+        200,
+        json={
+            "id": request_id,
+            "object": "chat.completion",
+            "model": model_name,
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": finish_reason,
+                    "message": {"role": "assistant", "content": assistant_content},
+                }
+            ],
+        },
+        headers={"x-request-id": request_id},
+    )
 
 
 def _coerce_usage(raw_usage: Any) -> dict[str, int | float | str]:
@@ -668,7 +749,7 @@ async def gateway_ready(request: Request) -> JSONResponse:
         for key, cfg in MODEL_REGISTRY.items()
         if cfg.get("process") is not None or cfg.get("healthy", False)
     }
-    models_ok = (not checked_models) or any(checked_models.values())
+    models_ok = bool(checked_models) and any(checked_models.values())
     ready = typedb_ok and models_ok
     return JSONResponse(
         status_code=200 if ready else 503,
@@ -788,14 +869,34 @@ async def proxy(path: str, request: Request) -> Response:
     # Detect streaming responses and forward them
     content_type = backend_resp.headers.get("content-type", "")
     if "text/event-stream" in content_type:
+        response_headers = _filter_response_headers(backend_resp.headers)
+
         async def _stream():
+            chunks: list[bytes] = []
             async for chunk in backend_resp.aiter_bytes():
+                chunks.append(chunk)
                 yield chunk
+            _schedule_writeback_event(
+                _build_writeback_event(
+                    path=path,
+                    method=request.method,
+                    request_body=body,
+                    request_headers=request.headers,
+                    backend_resp=_build_streaming_completion_response(
+                        b"".join(chunks),
+                        fallback_request_id=backend_resp.headers.get("x-request-id") or str(uuid4()),
+                    )
+                    or backend_resp,
+                    model_key=model_key,
+                    started_at=backend_started_at,
+                    completed_at=datetime.now(timezone.utc),
+                )
+            )
 
         return StreamingResponse(
             _stream(),
             status_code=backend_resp.status_code,
-            headers=dict(backend_resp.headers),
+            headers=response_headers,
             media_type=content_type,
         )
 
@@ -815,7 +916,7 @@ async def proxy(path: str, request: Request) -> Response:
     return Response(
         content=backend_resp.content,
         status_code=backend_resp.status_code,
-        headers=dict(backend_resp.headers),
+        headers=_filter_response_headers(backend_resp.headers),
         media_type=content_type,
     )
 

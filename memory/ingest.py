@@ -397,6 +397,7 @@ async def upsert_to_qdrant(
                 "path":      chunk.path,
                 "language":  chunk.language,
                 "digest":    chunk.digest,
+                "content":   chunk.content,
             },
         )
         for chunk, vec in zip(chunks, vectors)
@@ -495,10 +496,11 @@ def upsert_chat_session_to_typedb(
     artifacts: Sequence[ArtifactRecord],
     database: str,
 ) -> None:
-    for query in build_chat_memory_queries(session, turns, directives, artifacts):
-        with typedb_transaction(driver, database, TransactionType.WRITE) as tx:
+    queries = build_chat_memory_queries(session, turns, directives, artifacts)
+    with typedb_transaction(driver, database, TransactionType.WRITE) as tx:
+        for query in queries:
             tx.query(query)
-            tx.commit()
+        tx.commit()
 
 
 # ---------------------------------------------------------------------------
