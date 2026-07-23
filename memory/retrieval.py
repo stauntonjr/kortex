@@ -7,6 +7,7 @@ from dataclasses import asdict
 from typing import Any, Awaitable, Callable, Mapping, Sequence
 
 import httpx
+from qdrant_client import AsyncQdrantClient
 from typedb.driver import TransactionType, TypeDB
 
 from kortex.contracts import RetrievalRequest, RetrievalResult, RetrievedNode
@@ -448,3 +449,22 @@ async def retrieve_memory(
         nodes=nodes,
         explanation=explain_retrieval(request, seeds, neighbors, nodes),
     )
+
+
+def build_default_memory_retriever(
+    *,
+    qdrant_client: Any | None = None,
+    typedb_expand: TypeDBExpandFunction = default_typedb_expand,
+    embed_query: EmbeddingFunction = embed_query_text,
+) -> Callable[[RetrievalRequest], Awaitable[RetrievalResult]]:
+    client = qdrant_client or AsyncQdrantClient(url=os.getenv("QDRANT_ADDR", "http://localhost:6333"))
+
+    async def _retriever(request: RetrievalRequest) -> RetrievalResult:
+        return await retrieve_memory(
+            request,
+            qdrant_client=client,
+            embed_query=embed_query,
+            typedb_expand=typedb_expand,
+        )
+
+    return _retriever

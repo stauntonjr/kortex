@@ -6,8 +6,9 @@ import pytest
 
 pytest.importorskip("httpx")
 
-from kortex.contracts import RetrievalRequest, RetrievedNode
+from kortex.contracts import RetrievalRequest, RetrievalResult, RetrievedNode
 from memory.retrieval import (
+    build_default_memory_retriever,
     build_neighbor_expansion_query,
     build_seed_lookup_query,
     build_memory_context,
@@ -233,6 +234,27 @@ class TestRetrieveMemory:
 
         assert [node.node_id for node in result.nodes] == ["turn-1", "gateway/gateway.py"]
         assert "Qdrant returned 1 seed matches" in (result.explanation or "")
+
+    @pytest.mark.asyncio
+    async def test_build_default_memory_retriever_wraps_retrieve_memory(self, monkeypatch):
+        calls = {}
+
+        async def fake_retrieve_memory(request, *, qdrant_client, embed_query, typedb_expand):
+            calls["request"] = request
+            calls["qdrant_client"] = qdrant_client
+            calls["embed_query"] = embed_query
+            calls["typedb_expand"] = typedb_expand
+            return RetrievalResult(nodes=(), explanation="ok")
+
+        client = object()
+        monkeypatch.setattr("memory.retrieval.retrieve_memory", fake_retrieve_memory)
+        retriever = build_default_memory_retriever(qdrant_client=client)
+
+        result = await retriever(RetrievalRequest(query="hello"))
+
+        assert calls["request"].query == "hello"
+        assert calls["qdrant_client"] is client
+        assert result.explanation == "ok"
 
 
 class TestMemoryContext:

@@ -26,6 +26,7 @@ from agent.graph import (
     _COMPLEX_WORD_THRESHOLD,
     _SIMPLE_WORD_THRESHOLD,
     build_graph,
+    make_retrieve_node,
     intake_node,
     retrieve_node,
 )
@@ -273,6 +274,31 @@ class TestRetrieveNode:
         result = await retrieve_node(state)
 
         assert result["retrieval_request"].query == "gateway writeback"
+        assert result["retrieval_result"].nodes[0].node_id == "turn-1"
+        assert result["memory_nodes"][0]["node_id"] == "turn-1"
+
+    @pytest.mark.asyncio
+    async def test_make_retrieve_node_uses_default_retriever(self):
+        state = _make_state("gateway writeback")
+
+        async def fake_retriever(request):
+            assert request.query == "gateway writeback"
+            return RetrievalResult(
+                nodes=(
+                    RetrievedNode(
+                        node_id="turn-1",
+                        kind="chat",
+                        content="Remember the writeback constraint.",
+                        score=0.9,
+                        depth=0,
+                        name="turn-1",
+                    ),
+                ),
+                explanation="seed plus neighbor",
+            )
+
+        result = await make_retrieve_node(fake_retriever)(state)
+
         assert result["retrieval_result"].nodes[0].node_id == "turn-1"
         assert result["memory_nodes"][0]["node_id"] == "turn-1"
 

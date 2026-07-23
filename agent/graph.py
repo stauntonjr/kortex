@@ -31,6 +31,7 @@ from kortex.contracts import RetrievalRequest
 from memory.retrieval import (
     DEFAULT_TOKEN_BUDGET,
     MAX_TRAVERSAL_DEPTH,
+    build_default_memory_retriever,
     build_memory_context,
     retrieval_result_to_memory_nodes,
 )
@@ -141,17 +142,27 @@ def intake_node(state: WorkflowState) -> dict:
     return {"task_complexity": complexity, "model_key": model_key}
 
 
+def make_retrieve_node(default_retriever=None):
+    async def _retrieve_node(state: WorkflowState) -> dict:
+        retriever = state.get("memory_retriever") or default_retriever
+        if retriever is None:
+            return {}
+        request = _build_retrieval_request(state)
+        result = await retriever(request)
+        return {
+            "retrieval_request": request,
+            "retrieval_result": result,
+            "memory_nodes": retrieval_result_to_memory_nodes(result),
+        }
+
+    return _retrieve_node
+
+
 async def retrieve_node(state: WorkflowState) -> dict:
     retriever = state.get("memory_retriever")
     if retriever is None:
         return {}
-    request = _build_retrieval_request(state)
-    result = await retriever(request)
-    return {
-        "retrieval_request": request,
-        "retrieval_result": result,
-        "memory_nodes": retrieval_result_to_memory_nodes(result),
-    }
+    return await make_retrieve_node()(state)
 
 
 # ---------------------------------------------------------------------------
@@ -184,7 +195,7 @@ async def execute_node(state: WorkflowState) -> dict:
 # Graph factory
 # ---------------------------------------------------------------------------
 
-def build_graph() -> StateGraph:
+def build_graph(*, memory_retriever=None) -> StateGraph:
     """Construct and compile the Kortex LangGraph workflow.
 
     Graph topology::
@@ -194,7 +205,7 @@ def build_graph() -> StateGraph:
     graph: StateGraph = StateGraph(WorkflowState)
 
     graph.add_node("intake",  intake_node)
-    graph.add_node("retrieve", retrieve_node)
+    graph.add_node("retrieve", make_retrieve_node(memory_retriever))
     graph.add_node("execute", execute_node)
 
     graph.set_entry_point("intake")
@@ -210,4 +221,4 @@ def build_graph() -> StateGraph:
 # ---------------------------------------------------------------------------
 
 #: Ready-to-use compiled LangGraph for the Kortex agent workflow.
-kortex_graph = build_graph()
+kortex_graph = build_graph(memory_retriever=build_default_memory_retriever())
