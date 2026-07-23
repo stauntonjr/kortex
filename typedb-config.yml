@@ -1,0 +1,37 @@
+server:
+    listen-address: 0.0.0.0:1729
+    advertise-address:
+    http:
+        enabled: true
+        listen-address: 0.0.0.0:8000
+        advertise-address:
+    admin:
+        enabled: true
+        socket-path: /var/lib/typedb/data/admin.sock
+
+    authentication:
+        enabled: false
+        token-expiration-seconds: 5000
+
+    encryption:
+        enabled: false
+        certificate:
+        certificate-key:
+        ca-certificate:
+
+storage:
+    data-directory: "data"
+    rocksdb:
+        cache-size: 1gb
+        write-buffers-limit: 512mb
+
+logging:
+    directory: "logs"
+
+diagnostics:
+    monitoring:
+        enabled: true
+        port: 4104
+    reporting:
+        metrics: true
+        errors: true

@@ -1,1 +1,4 @@
 jupyterlab>3.0
+fastapi
+typedb-driver>=3.0
+uvicorn

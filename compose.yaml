@@ -2,19 +2,16 @@ name: kortex
 
 services:
   typedb:
-    image: vaticle/typedb:3.3.0
+    image: typedb/typedb:3.12.1
     container_name: kortex-typedb
     restart: unless-stopped
     ports:
       - "1729:1729"
     volumes:
       - typedb-data:/opt/typedb-all-linux-x86_64/server/data
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:1729/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+      - ./typedb-config.yml:/opt/typedb-server-linux-arm64/server/config.yml:ro
+    # healthcheck removed because the TypeDB image does not include `curl`.
+    # Container logs show the server is running; skip image-level health probing.
 
   qdrant:
     image: qdrant/qdrant:v1.12.1
@@ -27,12 +24,8 @@ services:
       - qdrant-data:/qdrant/storage
     environment:
       QDRANT__SERVICE__GRPC_PORT: "6334"
-    healthcheck:
-      test: ["CMD-SHELL", "curl -sf http://localhost:6333/healthz || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
+    # The stock qdrant image does not include curl or wget, so leave the
+    # container unprobed here instead of forcing a permanently unhealthy state.
 
   redis:
     image: redis:7.4-alpine
@@ -55,31 +48,38 @@ services:
       retries: 5
       start_period: 10s
 
-    gateway:
-      image: python:3.11-slim
-      container_name: kortex-gateway
-      restart: unless-stopped
-      depends_on:
-        - typedb
-        - qdrant
-        - redis
-      ports:
-        - "8080:8080"
-      working_dir: /opt/kortex
-      volumes:
-        - ./:/opt/kortex:ro
-      environment:
-        - TYPEDB_ADDR=typedb:1729
-        - QDRANT_ADDR=http://qdrant:6333
-        - REDIS_URL=redis://redis:6379/0
-        - GATEWAY_URL=http://localhost:8080/v1
-      command: ["sh", "-c", "pip install --no-cache-dir -r /opt/kortex/pyproject.toml || true && python -m gateway.gateway"]
-      healthcheck:
-        test: ["CMD-SHELL", "curl -sf http://localhost:8080/healthz || exit 1"]
-        interval: 10s
-        timeout: 5s
-        retries: 5
-        start_period: 20s
+  
+  gateway:
+    image: python:3.11-slim
+    container_name: kortex-gateway
+    restart: unless-stopped
+    depends_on:
+      - typedb
+      - qdrant
+      - redis
+    ports:
+      - "8080:8080"
+    working_dir: /opt/kortex
+    volumes:
+      - ./:/opt/kortex:ro
+    environment:
+      - TYPEDB_ADDR=typedb:1729
+      - QDRANT_ADDR=http://qdrant:6333
+      - REDIS_URL=redis://redis:6379/0
+      - GATEWAY_URL=http://localhost:8080/v1
+    command: ["sh", "-c", "pip install --no-cache-dir -r /opt/kortex/requirements.txt && python -m gateway.gateway"]
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/health').status == 200 else 1)",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
 volumes:
   typedb-data:
