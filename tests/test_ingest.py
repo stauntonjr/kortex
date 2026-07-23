@@ -18,13 +18,22 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+pytest.importorskip("httpx")
+pytest.importorskip("qdrant_client")
+pytest.importorskip("typedb.driver")
+
 from memory.ingest import (
     CHUNK_SIZE,
     TYPEDB_REQUEST_TIMEOUT_MILLIS,
     TYPEDB_SCHEMA_LOCK_TIMEOUT_MILLIS,
     TYPEDB_TRANSACTION_TIMEOUT_MILLIS,
+    ChatSessionRecord,
+    ChatTurnRecord,
     CodeChunk,
+    DirectiveRecord,
     bootstrap_typedb,
+    build_chat_memory_queries,
+    build_code_entity_insert,
     build_typedb_driver_options,
     build_typedb_transaction_options,
     discover_sources,
@@ -266,3 +275,106 @@ class TestTypeDBOperations:
         assert 'has entity-path  "/src/mod.py"' in insert_query
         assert 'has language     "python"' in insert_query
         write_tx.commit.assert_called_once()
+
+
+class TestInsertBuilders:
+    def test_code_insert_escapes_quotes_and_newlines(self):
+        chunk = CodeChunk(
+            entity_id='entity-"1"',
+            kind="file",
+            name='mod"ule.py#0',
+            path="/src/mod.py",
+            language="python",
+            content='print("hello")\n',
+        )
+
+        query = build_code_entity_insert(chunk)
+
+        assert '\\"1\\"' in query
+        assert 'mod\\"ule.py#0' in query
+        assert "\\n" not in query  # content is hashed, not inserted directly
+
+
+class TestChatMemoryQueries:
+    def test_builds_session_turn_directive_and_mention_queries(self):
+        session = ChatSessionRecord(
+            session_id="session-1",
+            title="Gateway follow-up",
+            source_uri="chat://session-1",
+        )
+        turns = [
+            ChatTurnRecord(
+                turn_id="turn-1",
+                session_id="session-1",
+                role="user",
+                content="Keep gateway healthchecks pointed at real endpoints.",
+                turn_index=1,
+                source_uri="chat://session-1#1",
+                mentioned_entity_ids=("code:gateway/gateway.py",),
+            )
+        ]
+        directives = [
+            DirectiveRecord(
+                directive_id="directive-1",
+                kind="constraint",
+                body="Healthchecks must probe real endpoints.",
+                source_turn_id="turn-1",
+                severity="warning",
+            )
+        ]
+
+        queries = build_chat_memory_queries(session, turns, directives)
+        rendered = "\n\n".join(queries)
+
+        assert 'has session-id "session-1"' in rendered
+        assert 'has turn-id "turn-1"' in rendered
+        assert "(session: $session, turn: $turn) isa session-membership;" in rendered
+        assert '(source-turn: $turn, target: $entity) isa mention, has confidence 1.0;' in rendered
+        assert "(directive: $directive, source-turn: $turn) isa directive-source" in rendered
+
+    def test_rejects_turn_with_wrong_session(self):
+        session = ChatSessionRecord(session_id="session-1")
+        turns = [
+            ChatTurnRecord(
+                turn_id="turn-1",
+                session_id="session-2",
+                role="user",
+                content="mismatch",
+                turn_index=1,
+            )
+        ]
+
+        with pytest.raises(ValueError, match="expected session-1"):
+            build_chat_memory_queries(session, turns)
+
+    def test_rejects_directive_for_unknown_turn(self):
+        session = ChatSessionRecord(session_id="session-1")
+        turns = [
+            ChatTurnRecord(
+                turn_id="turn-1",
+                session_id="session-1",
+                role="user",
+                content="known turn",
+                turn_index=1,
+            )
+        ]
+        directives = [
+            DirectiveRecord(
+                directive_id="directive-1",
+                kind="workflow",
+                body="Always keep notes durable.",
+                source_turn_id="turn-404",
+            )
+        ]
+
+        with pytest.raises(ValueError, match="unknown turn turn-404"):
+            build_chat_memory_queries(session, turns, directives)
+
+
+class TestExamplesFile:
+    def test_examples_cover_code_and_chat_domains(self):
+        examples = (Path(__file__).resolve().parents[1] / "memory" / "examples.tql").read_text()
+
+        assert "code-entity" in examples
+        assert "chat-session" in examples
+        assert "directive-node" in examples

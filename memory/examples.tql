@@ -1,0 +1,48 @@
+# Example inserts for the Kortex memory graph.
+# These examples are intentionally small and cover both code memory and
+# chat-history memory in the same schema.
+
+insert
+  $file isa code-entity,
+    has entity-id "code:gateway/gateway.py",
+    has entity-kind "file",
+    has entity-name "gateway.py",
+    has entity-path "gateway/gateway.py",
+    has entity-digest "sha256:demo",
+    has vector-id "00000000-0000-0000-0000-000000000001",
+    has language "python";
+
+insert
+  $session isa chat-session,
+    has session-id "session:demo",
+    has session-name "Gateway healthcheck follow-up",
+    has source-uri "chat://demo/session:demo";
+  $turn isa chat-turn,
+    has turn-id "turn:demo:1",
+    has speaker-role "user",
+    has turn-index 1,
+    has content-text "Keep readiness checks aligned with the real endpoint.",
+    has source-uri "chat://demo/session:demo#1";
+  $directive isa directive-node,
+    has directive-id "directive:demo:1",
+    has directive-kind "constraint",
+    has directive-body "Healthchecks must probe real endpoints.",
+    has severity "warning";
+
+match
+  $session isa chat-session, has session-id "session:demo";
+  $turn isa chat-turn, has turn-id "turn:demo:1";
+insert
+  (session: $session, turn: $turn) isa session-membership;
+
+match
+  $turn isa chat-turn, has turn-id "turn:demo:1";
+  $directive isa directive-node, has directive-id "directive:demo:1";
+insert
+  (directive: $directive, source-turn: $turn) isa directive-source;
+
+match
+  $turn isa chat-turn, has turn-id "turn:demo:1";
+  $file isa code-entity, has entity-id "code:gateway/gateway.py";
+insert
+  (source-turn: $turn, target: $file) isa mention, has confidence 0.9;

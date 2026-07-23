@@ -36,10 +36,9 @@ kortex-gateway = "gateway.gateway:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["gateway*", "memory*", "agent*"]
+include = ["gateway*", "memory*", "agent*", "kortex*"]
 
 [tool.pytest.ini_options]
-asyncio_mode = "auto"
 testpaths = ["tests"]
 
 [tool.ruff]

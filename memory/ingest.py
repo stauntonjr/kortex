@@ -26,6 +26,7 @@ import os
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Sequence
 
@@ -91,6 +92,222 @@ class CodeChunk:
 
     def __post_init__(self) -> None:
         self.digest = hashlib.sha256(self.content.encode()).hexdigest()
+
+
+@dataclass(frozen=True)
+class ChatSessionRecord:
+    session_id: str
+    title: str | None = None
+    source_uri: str | None = None
+
+
+@dataclass(frozen=True)
+class ChatTurnRecord:
+    turn_id: str
+    session_id: str
+    role: str
+    content: str
+    turn_index: int
+    timestamp: datetime | None = None
+    source_uri: str | None = None
+    model_name: str | None = None
+    vector_id: str | None = None
+    mentioned_entity_ids: tuple[str, ...] = ()
+    mentioned_artifact_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class DirectiveRecord:
+    directive_id: str
+    kind: str
+    body: str
+    source_turn_id: str
+    severity: str = "info"
+
+
+@dataclass(frozen=True)
+class ArtifactRecord:
+    artifact_id: str
+    name: str
+    path: str
+    content_text: str | None = None
+    source_uri: str | None = None
+    vector_id: str | None = None
+
+
+def _quote_string(value: str) -> str:
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace("\"", "\\\"")
+        .replace("\n", "\\n")
+    )
+    return f"\"{escaped}\""
+
+
+def build_code_entity_insert(chunk: CodeChunk) -> str:
+    return f"""
+                    insert $e isa code-entity,
+                      has entity-id    {_quote_string(chunk.entity_id)},
+                      has entity-kind  {_quote_string(chunk.kind)},
+                      has entity-name  {_quote_string(chunk.name)},
+                      has entity-path  {_quote_string(chunk.path)},
+                      has entity-digest {_quote_string(chunk.digest)},
+                      has vector-id    {_quote_string(chunk.vector_id)},
+                      has language     {_quote_string(chunk.language)};
+                    """
+
+
+def build_chat_session_insert(session: ChatSessionRecord) -> str:
+    lines = [
+        "insert $session isa chat-session,",
+        f"  has session-id {_quote_string(session.session_id)},",
+    ]
+    if session.title:
+        lines.append(f"  has session-name {_quote_string(session.title)},")
+    if session.source_uri:
+        lines.append(f"  has source-uri {_quote_string(session.source_uri)},")
+    lines[-1] = lines[-1].rstrip(",") + ";"
+    return "\n".join(lines)
+
+
+def build_chat_turn_insert(turn: ChatTurnRecord) -> str:
+    lines = [
+        "insert $turn isa chat-turn,",
+        f"  has turn-id {_quote_string(turn.turn_id)},",
+        f"  has speaker-role {_quote_string(turn.role)},",
+        f"  has turn-index {turn.turn_index},",
+        f"  has content-text {_quote_string(turn.content)},",
+    ]
+    if turn.timestamp:
+        lines.append(f"  has turn-timestamp {turn.timestamp.isoformat()},")
+    if turn.source_uri:
+        lines.append(f"  has source-uri {_quote_string(turn.source_uri)},")
+    if turn.vector_id:
+        lines.append(f"  has vector-id {_quote_string(turn.vector_id)},")
+    if turn.model_name:
+        lines.append(f"  has model-name {_quote_string(turn.model_name)},")
+    lines[-1] = lines[-1].rstrip(",") + ";"
+    return "\n".join(lines)
+
+
+def build_directive_insert(directive: DirectiveRecord) -> str:
+    return "\n".join(
+        [
+            "insert $directive isa directive-node,",
+            f"  has directive-id {_quote_string(directive.directive_id)},",
+            f"  has directive-kind {_quote_string(directive.kind)},",
+            f"  has directive-body {_quote_string(directive.body)},",
+            f"  has severity {_quote_string(directive.severity)};",
+        ]
+    )
+
+
+def build_project_artifact_insert(artifact: ArtifactRecord) -> str:
+    lines = [
+        "insert $artifact isa project-artifact,",
+        f"  has artifact-id {_quote_string(artifact.artifact_id)},",
+        f"  has artifact-name {_quote_string(artifact.name)},",
+        f"  has artifact-path {_quote_string(artifact.path)},",
+    ]
+    if artifact.content_text:
+        lines.append(f"  has content-text {_quote_string(artifact.content_text)},")
+    if artifact.source_uri:
+        lines.append(f"  has source-uri {_quote_string(artifact.source_uri)},")
+    if artifact.vector_id:
+        lines.append(f"  has vector-id {_quote_string(artifact.vector_id)},")
+    lines[-1] = lines[-1].rstrip(",") + ";"
+    return "\n".join(lines)
+
+
+def build_session_membership_insert(session_id: str, turn_id: str) -> str:
+    return "\n".join(
+        [
+            "match",
+            f"  $session isa chat-session, has session-id {_quote_string(session_id)};",
+            f"  $turn isa chat-turn, has turn-id {_quote_string(turn_id)};",
+            "insert",
+            "  (session: $session, turn: $turn) isa session-membership;",
+        ]
+    )
+
+
+def build_turn_mention_insert(turn_id: str, entity_id: str) -> str:
+    return "\n".join(
+        [
+            "match",
+            f"  $turn isa chat-turn, has turn-id {_quote_string(turn_id)};",
+            f"  $entity isa code-entity, has entity-id {_quote_string(entity_id)};",
+            "insert",
+            "  (source-turn: $turn, target: $entity) isa mention, has confidence 1.0;",
+        ]
+    )
+
+
+def build_turn_artifact_mention_insert(turn_id: str, artifact_id: str) -> str:
+    return "\n".join(
+        [
+            "match",
+            f"  $turn isa chat-turn, has turn-id {_quote_string(turn_id)};",
+            f"  $artifact isa project-artifact, has artifact-id {_quote_string(artifact_id)};",
+            "insert",
+            "  (source-turn: $turn, target: $artifact) isa mention, has confidence 1.0;",
+        ]
+    )
+
+
+def build_directive_source_insert(directive_id: str, source_turn_id: str) -> str:
+    return "\n".join(
+        [
+            "match",
+            f"  $directive isa directive-node, has directive-id {_quote_string(directive_id)};",
+            f"  $turn isa chat-turn, has turn-id {_quote_string(source_turn_id)};",
+            "insert",
+            "  (directive: $directive, source-turn: $turn) isa directive-source, has confidence 1.0;",
+        ]
+    )
+
+
+def build_chat_memory_queries(
+    session: ChatSessionRecord,
+    turns: Sequence[ChatTurnRecord],
+    directives: Sequence[DirectiveRecord] = (),
+    artifacts: Sequence[ArtifactRecord] = (),
+) -> list[str]:
+    turn_ids = {turn.turn_id for turn in turns}
+    queries = [build_chat_session_insert(session)]
+    seen_artifact_ids: set[str] = set()
+
+    for artifact in artifacts:
+        if artifact.artifact_id in seen_artifact_ids:
+            continue
+        queries.append(build_project_artifact_insert(artifact))
+        seen_artifact_ids.add(artifact.artifact_id)
+
+    for turn in turns:
+        if turn.session_id != session.session_id:
+            raise ValueError(
+                f"turn {turn.turn_id} belongs to session {turn.session_id}, expected {session.session_id}"
+            )
+        queries.append(build_chat_turn_insert(turn))
+        queries.append(build_session_membership_insert(session.session_id, turn.turn_id))
+        for entity_id in turn.mentioned_entity_ids:
+            queries.append(build_turn_mention_insert(turn.turn_id, entity_id))
+        for artifact_id in turn.mentioned_artifact_ids:
+            if artifact_id not in seen_artifact_ids:
+                raise ValueError(
+                    f"turn {turn.turn_id} references unknown artifact {artifact_id}"
+                )
+            queries.append(build_turn_artifact_mention_insert(turn.turn_id, artifact_id))
+
+    for directive in directives:
+        if directive.source_turn_id not in turn_ids:
+            raise ValueError(
+                f"directive {directive.directive_id} references unknown turn {directive.source_turn_id}"
+            )
+        queries.append(build_directive_insert(directive))
+        queries.append(build_directive_source_insert(directive.directive_id, directive.source_turn_id))
+
+    return queries
 
 
 # ---------------------------------------------------------------------------
@@ -253,32 +470,35 @@ def upsert_to_typedb(
                 tx.query(
                     f"""
                     match
-                      $e isa code-entity, has entity-id "{chunk.entity_id}",
+                      $e isa code-entity, has entity-id {_quote_string(chunk.entity_id)},
                            has entity-digest $d, has vector-id $v;
                     delete has entity-digest $d of $e;
                     delete has vector-id $v of $e;
                     insert
-                      has entity-digest "{chunk.digest}" of $e;
-                      has vector-id     "{chunk.vector_id}" of $e;
+                      has entity-digest {_quote_string(chunk.digest)} of $e;
+                      has vector-id     {_quote_string(chunk.vector_id)} of $e;
                     """
                 )
                 tx.commit()
         else:
             with typedb_transaction(driver, database, TransactionType.WRITE) as tx:
-                tx.query(
-                    f"""
-                    insert $e isa code-entity,
-                      has entity-id    "{chunk.entity_id}",
-                      has entity-kind  "{chunk.kind}",
-                      has entity-name  "{chunk.name}",
-                      has entity-path  "{chunk.path}",
-                      has entity-digest "{chunk.digest}",
-                      has vector-id    "{chunk.vector_id}",
-                      has language     "{chunk.language}";
-                    """
-                )
+                tx.query(build_code_entity_insert(chunk))
                 tx.commit()
     logger.info("Upserted %d entities into TypeDB.", len(chunks))
+
+
+def upsert_chat_session_to_typedb(
+    driver,
+    session: ChatSessionRecord,
+    turns: Sequence[ChatTurnRecord],
+    directives: Sequence[DirectiveRecord],
+    artifacts: Sequence[ArtifactRecord],
+    database: str,
+) -> None:
+    for query in build_chat_memory_queries(session, turns, directives, artifacts):
+        with typedb_transaction(driver, database, TransactionType.WRITE) as tx:
+            tx.query(query)
+            tx.commit()
 
 
 # ---------------------------------------------------------------------------

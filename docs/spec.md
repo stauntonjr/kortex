@@ -11,8 +11,9 @@ The system combines:
   starting and stopping local model runtimes on demand.
 - A hybrid memory plane that stores both structured facts and semantic vectors.
 - Structure-aware ingestion for code, project artifacts, and chat history.
-- An optional orchestration layer for routing, retrieval, and background memory
-  maintenance.
+- An orchestration layer for routing, retrieval, tool use, and response shaping.
+- A reflection layer for asynchronous memory maintenance and metacognitive
+  review.
 
 This document is the architecture source of truth for the repository. Chat logs
 and ideation threads are input material, not the spec.
@@ -53,15 +54,18 @@ and ideation threads are input material, not the spec.
 
 ```mermaid
 flowchart LR
-    IDE[IDE or local client] --> GW[Gateway\nOpenAI-compatible proxy]
+    IDE[IDE or local client] --> ORCH[Task agent\norchestration plane]
+    ORCH --> GW[Gateway\nserving plane]
     GW --> MODELS[Local model runtimes\nvia sparkrun]
-    GW --> AGENT[Routing and orchestration]
-    AGENT --> QDRANT[Qdrant\nsemantic retrieval]
-    AGENT --> TYPEDB[TypeDB\nstructured memory]
-    INGEST[Ingestion pipelines] --> QDRANT
+    GW --> WB[Transcript writeback event]
+    ORCH --> RETR[Retrieval API]
+    RETR --> QDRANT[Qdrant\nsemantic recall]
+    RETR --> TYPEDB[TypeDB\nstructured memory]
+    WB --> INGEST[Ingestion worker\nmemory plane]
+    INGEST --> QDRANT
     INGEST --> TYPEDB
-    CHAT[Chat sessions and turns] --> INGEST
-    CODE[Code and project artifacts] --> INGEST
+    REFL[Reflection worker\nreflection plane] --> QDRANT
+    REFL --> TYPEDB
 ```
 
 ## Component Responsibilities
@@ -84,6 +88,7 @@ Non-responsibilities:
 - Long-term memory storage.
 - Rich agent planning.
 - Complex code ingestion.
+- Background graph maintenance.
 
 ### 2. Model Fleet
 
@@ -123,6 +128,78 @@ Required ingestion domains:
 Structure-aware parsing is required for code. AST-backed ingestion should replace
 or dominate naive chunking for source files.
 
+Chat-history ingestion should not run inline with user-facing proxy latency.
+The gateway should emit a writeback event after a response completes, and a
+separate ingestion worker should persist transcript facts into TypeDB and
+embeddings into Qdrant.
+
+## Architectural Planes
+
+Kortex should preserve four planes with explicit boundaries.
+
+### Serving Plane
+
+The serving plane contains the FastAPI gateway and model lifecycle logic.
+
+It owns:
+
+- Request validation and OpenAI-compatible proxying
+- Model selection and backend routing
+- Process lifecycle, readiness, and model swap policy
+- Emitting transcript writeback events after request completion
+
+It does not own:
+
+- TypeDB schema logic
+- Qdrant indexing logic
+- Retrieval assembly
+- Background reflection or metacognition
+
+### Memory Plane
+
+The memory plane owns durable persistence and ingestion.
+
+It owns:
+
+- Transcript normalization
+- Code and artifact ingestion
+- TypeDB writes for structured facts
+- Qdrant writes for semantic recall
+
+It should expose persistence-oriented interfaces rather than direct database
+knowledge to the agent.
+
+### Orchestration Plane
+
+The orchestration plane contains the task-facing agent.
+
+The initial shape should be a single orchestrator agent, not a swarm of peer
+agents.
+
+It owns:
+
+- Task classification
+- Retrieval decisions
+- Tool invocation
+- Context assembly
+- Response planning before handing off to the gateway
+
+### Reflection Plane
+
+The reflection plane contains asynchronous maintenance and future
+metacognitive behavior.
+
+It owns:
+
+- Session compaction and summarization
+- Directive and preference extraction candidates
+- Graph repair and enrichment
+- Re-embedding or schema-migration follow-up jobs
+- Reviewable promotion of stable beliefs or preferences
+
+It must treat raw turns as immutable history. Derived summaries, directives, and
+preferences should remain provenance-linked to the turns that justified them.
+
 ## Memory Model
 
 ### Code Memory
@@ -149,6 +226,7 @@ Chat memory should capture at least:
 - Turns or messages
 - Speaker role
 - Timestamp
+- Model provenance for assistant turns where available
 - Message content or durable excerpt
 - Mentioned repositories, files, symbols, tools, and models
 - Extracted directives or user preferences
@@ -195,6 +273,13 @@ Minimum target behavior:
 - Token-bounded context assembly before prompt injection.
 - Separate retrieval paths for code, artifacts, and chat history.
 
+The expected flow is:
+
+1. Qdrant returns candidate turns, artifacts, or code nodes.
+2. TypeDB expands those candidates through graph neighbors and provenance links.
+3. The retriever assembles a bounded result with an explanation of why the
+   nodes belong together.
+
 The retrieval result should explain not just “what matched” but “why these nodes
 belong together.”
 
@@ -208,10 +293,56 @@ Its future responsibilities should include:
 - Task classification and model routing.
 - Memory retrieval and context assembly.
 - Tool invocation.
-- Background compaction and extraction jobs.
+- Triggering asynchronous writeback and reflection jobs.
+
+The orchestration agent should depend on tool or service interfaces rather than
+direct TypeDB, Qdrant, or gateway internals.
 
 The initial repository does not need full metacognitive autonomy to be useful.
-It does need a stable gateway plus usable memory primitives.
+It does need a stable gateway plus usable memory primitives and clean service
+boundaries.
+
+## Tool And Service Boundaries
+
+Agents should interact with the system through typed tool or service surfaces.
+
+Minimum interfaces:
+
+- `gateway.chat`: send messages through the serving plane and receive the
+  resolved model plus response
+- `memory.writeback`: enqueue transcript or artifact ingestion work
+- `memory.retrieve`: hybrid recall across code, chat, and artifacts
+- `memory.lookup-entity`: fetch a structured node by ID
+- `memory.lookup-neighbors`: expand the graph around a seed node
+- `reflection.schedule`: enqueue compaction, extraction, or repair jobs
+
+Minimum shared contracts:
+
+- `GatewayResult`
+- `TranscriptWritebackEvent`
+- `RetrievalRequest`
+- `RetrievalResult`
+- `ReflectionJob`
+
+These contracts should keep the gateway, retriever, ingestors, and reflection
+workers decoupled.
+
+## Reflection And Metacognition
+
+Metacognition should be implemented as a higher-order reflection capability, not
+as a property of the gateway and not as unreviewed mutation of stored truth.
+
+Safe progression:
+
+1. Serve responses
+2. Persist raw transcript and artifact facts
+3. Retrieve durable memory during tasks
+4. Compact and extract derived memory asynchronously
+5. Add metacognitive review over outcomes, retrieval quality, and stable
+   preferences
+
+Metacognition should propose, score, or promote derived memory. It should not
+silently replace raw turns or rewrite core facts without provenance.
 
 ## Delivery Order
 
@@ -235,6 +366,8 @@ the following:
 - Heavyweight model swaps are deterministic and race-safe.
 - TypeDB schema covers code entities and chat-session history, not only code.
 - Qdrant indexing exists for both code and chat retrieval.
+- Transcript writeback and retrieval use explicit contracts rather than hidden
+  cross-module coupling.
 - Retrieval context is bounded by traversal depth and token budget.
 - The README points to stable documentation instead of relying on external chat
   threads.

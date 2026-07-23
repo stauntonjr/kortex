@@ -9,6 +9,11 @@ define
 # Attributes
 # ---------------------------------------------------------------------------
 
+  session-id      sub attribute, value string;
+  turn-id         sub attribute, value string;
+  directive-id    sub attribute, value string;
+  artifact-id     sub attribute, value string;
+
   entity-id       sub attribute, value string;
   entity-kind     sub attribute, value string;   # file | function | class | module | concept
   entity-name     sub attribute, value string;
@@ -16,6 +21,17 @@ define
   entity-digest   sub attribute, value string;   # SHA-256 of source content
   vector-id       sub attribute, value string;   # Qdrant point UUID
   language        sub attribute, value string;
+  speaker-role    sub attribute, value string;   # user | assistant | system | tool
+  turn-index      sub attribute, value long;
+  turn-timestamp  sub attribute, value datetime;
+  content-text    sub attribute, value string;
+  source-uri      sub attribute, value string;
+  session-name    sub attribute, value string;
+  artifact-name   sub attribute, value string;
+  artifact-path   sub attribute, value string;
+  directive-kind  sub attribute, value string;   # preference | constraint | workflow | policy
+  directive-body  sub attribute, value string;
+  model-name      sub attribute, value string;
   created-at      sub attribute, value datetime;
   updated-at      sub attribute, value datetime;
 
@@ -34,7 +50,11 @@ define
 # Entities
 # ---------------------------------------------------------------------------
 
-  code-entity sub entity,
+  memory-node sub entity,
+    owns created-at,
+    owns updated-at;
+
+  code-entity sub memory-node,
     owns entity-id @key,
     owns entity-kind,
     owns entity-name,
@@ -42,20 +62,55 @@ define
     owns entity-digest,
     owns vector-id,
     owns language,
-    owns created-at,
-    owns updated-at,
     plays triplet-link:subject,
     plays triplet-link:object,
-    plays violation:offender;
+    plays violation:offender,
+    plays mention:target;
 
-  rule-node sub entity,
+  chat-session sub memory-node,
+    owns session-id @key,
+    owns session-name,
+    owns source-uri,
+    plays session-membership:session;
+
+  chat-turn sub memory-node,
+    owns turn-id @key,
+    owns speaker-role,
+    owns turn-index,
+    owns turn-timestamp,
+    owns content-text,
+    owns source-uri,
+    owns vector-id,
+    owns model-name,
+    plays session-membership:turn,
+    plays mention:source-turn,
+    plays directive-source:source-turn;
+
+  directive-node sub memory-node,
+    owns directive-id @key,
+    owns directive-kind,
+    owns directive-body,
+    owns severity,
+    plays directive-source:directive,
+    plays mention:target;
+
+  project-artifact sub memory-node,
+    owns artifact-id @key,
+    owns artifact-name,
+    owns artifact-path,
+    owns content-text,
+    owns source-uri,
+    owns vector-id,
+    plays mention:target;
+
+  rule-node sub memory-node,
     owns rule-id @key,
     owns rule-kind,
     owns rule-name,
     owns rule-body,
     owns severity,
-    owns created-at,
-    plays violation:rule;
+    plays violation:rule,
+    plays mention:target;
 
 # ---------------------------------------------------------------------------
 # Relations
@@ -75,6 +130,23 @@ define
     owns created-at,
     relates offender,
     relates rule;
+
+  session-membership sub relation,
+    owns created-at,
+    relates session,
+    relates turn;
+
+  mention sub relation,
+    owns confidence,
+    owns created-at,
+    relates source-turn,
+    relates target;
+
+  directive-source sub relation,
+    owns confidence,
+    owns created-at,
+    relates directive,
+    relates source-turn;
 
 # ---------------------------------------------------------------------------
 # Modular Functions — multi-hop confidence scoring

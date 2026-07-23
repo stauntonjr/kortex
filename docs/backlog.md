@@ -55,17 +55,26 @@ Acceptance criteria:
 ### B1.2 Define chat-history ingestion
 
 - Create a pipeline that stores chat transcripts in both TypeDB and Qdrant.
-- Preserve session metadata, turn order, role, and extracted references.
+- Preserve session metadata, turn order, role, timestamps, model provenance, and
+  extracted references.
+- Define a canonical transcript contract so gateway writeback and offline import
+  use the same ingestion path.
+- Keep gateway response latency decoupled from transcript persistence by using a
+  writeback event or queue boundary.
 
 Acceptance criteria:
 
 - A sample session can be ingested into the graph.
 - The same session can be embedded for semantic search.
+- Transcript ingestion is driven by an explicit writeback contract rather than
+  direct gateway/database coupling.
 
 ### B1.3 Make retrieval actually query storage
 
 - Replace formatting-only helpers with real retrieval from TypeDB and Qdrant.
 - Support separate recall modes for code, chat, and project artifacts.
+- Make Qdrant candidate search and TypeDB neighborhood expansion explicit in the
+  retrieval API.
 
 Acceptance criteria:
 
@@ -129,6 +138,8 @@ Acceptance criteria:
 
 - Use LangGraph or equivalent only after retrieval primitives are stable.
 - Introduce nodes for classification, retrieval, execution, and response.
+- Keep the first agent as a single orchestrator with tool/service boundaries,
+  not a swarm of peer agents.
 
 Acceptance criteria:
 
@@ -138,6 +149,8 @@ Acceptance criteria:
 
 - Evaluate `typedb-mcp` as the structured tool interface.
 - Decide whether the repo should wrap it or depend on it externally.
+- Define the minimum tool surfaces needed between orchestration, memory,
+  gateway, and reflection planes.
 
 Acceptance criteria:
 
@@ -147,10 +160,24 @@ Acceptance criteria:
 
 - Compact sessions into durable summaries without losing graph links.
 - Extract directives or stable preferences as reviewable candidates.
+- Keep raw turns immutable and provenance-link any derived summary or promoted
+  belief back to source turns.
 
 Acceptance criteria:
 
 - Chat history remains searchable at raw-turn and compacted levels.
+
+### B4.4 Add metacognitive review as a reflection capability
+
+- Evaluate retrieval outcomes, repeated failures, and stable user preferences
+  outside the online request path.
+- Allow the system to propose durable preferences, repair jobs, or follow-up
+  work without silently rewriting core facts.
+
+Acceptance criteria:
+
+- Reflection jobs can emit reviewable candidate directives or preferences.
+- Metacognitive behavior remains asynchronous and provenance-linked.
 
 ## Phase 5: Improve Operations And Developer Experience
 
