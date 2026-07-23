@@ -28,13 +28,13 @@ import httpx
 from langgraph.graph import END, StateGraph
 
 from kortex.contracts import RetrievalRequest
+from memory import build_memory_service
 from memory.retrieval import (
     DEFAULT_TOKEN_BUDGET,
     MAX_TRAVERSAL_DEPTH,
     build_memory_context,
     retrieval_result_to_memory_nodes,
 )
-from memory.service import build_memory_service
 from agent.state import COMPLEXITY_MAP, WorkflowState
 
 logger = logging.getLogger(__name__)

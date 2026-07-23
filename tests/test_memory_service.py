@@ -7,6 +7,19 @@ from memory import service
 
 
 class TestMemoryService:
+    def test_memory_package_exports_service_boundary(self):
+        from memory import (
+            build_memory_service,
+            lookup_entity_by_node,
+            lookup_neighbors_by_node,
+            retrieve,
+        )
+
+        assert callable(build_memory_service)
+        assert callable(lookup_entity_by_node)
+        assert callable(lookup_neighbors_by_node)
+        assert callable(retrieve)
+
     @pytest.mark.asyncio
     async def test_build_memory_service_uses_provided_retriever(self):
         async def fake_retriever(request):
