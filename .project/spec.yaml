@@ -3,25 +3,26 @@ specMinorVersion: 2
 meta:
     name: stauntonjr-kortex2
     image: project-stauntonjr-kortex2
-    description: ""
-    labels: []
+    description: Kortex AI Workbench environment
+    labels:
+        - cuda13.1
+        - pytorch2.11
     createdOn: "2026-07-22T21:26:22Z"
-    defaultBranch: main
+    defaultBranch: master
 layout: []
 environment:
     base:
         registry: nvcr.io
-        image: nvidia/ai-workbench/python-basic:1.0.9
-        build_timestamp: "20260112183658"
-        name: Python Basic
+        image: nvidia/ai-workbench/pytorch:1.0.10
+        build_timestamp: "20260514182545"
+        name: PyTorch
         supported_architectures: []
-        cuda_version: ""
-        description: A Python Base with Jupyterlab
+        cuda_version: "13.1"
+        description: A Pytorch 2.11 Base with CUDA 13.1
         entrypoint_script: ""
         labels:
-            - ubuntu
-            - python3
-            - jupyterlab
+            - cuda13.1
+            - pytorch2.11
         apps:
             - name: jupyterlab
               type: jupyterlab
@@ -42,10 +43,10 @@ environment:
         programming_languages:
             - python3
         icon_url: https://workbench.download.nvidia.com/static/img/ai-workbench-icon-rectangle.jpg
-        image_version: 1.0.9
+        image_version: 1.0.10
         os: linux
         os_distro: ubuntu
-        os_distro_release: "22.04"
+        os_distro_release: "24.04"
         schema_version: v2
         user_info:
             uid: ""
@@ -58,15 +59,11 @@ environment:
                 - curl
                 - git
                 - git-lfs
-                - python3
-                - gcc
-                - python3-dev
-                - python3-pip
                 - vim
             - name: pip
-              binary_path: /usr/bin/pip
+              binary_path: /usr/local/bin/pip
               installed_packages:
-                - jupyterlab==4.3.6
+                - jupyterlab>=4.5.7
         package_manager_environment:
             name: ""
             target: ""
@@ -86,7 +83,7 @@ execution:
     resources:
         gpu:
             requested: 1
-        sharedMemoryMB: 0
+        sharedMemoryMB: 1024
     secrets: []
     mounts:
         - type: project
